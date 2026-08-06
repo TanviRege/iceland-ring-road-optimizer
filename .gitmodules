@@ -1,0 +1,3 @@
+[submodule "src/data_sources/gasvaktin"]
+	path = src/data_sources/gasvaktin
+	url = https://github.com/gasvaktin/gasvaktin.git
