@@ -39,10 +39,16 @@ st.sidebar.caption(
     "Paste a Google Maps **directions** URL and we'll sample weather stations "
     "along the route."
 )
-if "GOOGLE_MAPS_API_KEY" not in os.environ or st.secrets.get("GOOGLE_MAPS_API_KEY"):
-    st.sidebar.warning(
-        "Put your `GOOGLE_MAPS_API_KEY` in `.env` (project root) before fetching directions."
-    )
+if "GOOGLE_MAPS_API_KEY" not in os.environ:
+    try:
+        if not st.secrets.get("GOOGLE_MAPS_API_KEY"):
+            st.sidebar.warning(
+                "Put your `GOOGLE_MAPS_API_KEY` in `.env` (project root) or `.streamlit/secrets.toml` before fetching directions."
+            )
+    except Exception:
+        st.sidebar.warning(
+            "Put your `GOOGLE_MAPS_API_KEY` in `.env` (project root) or `.streamlit/secrets.toml` before fetching directions."
+        )
 
 # --------------------------------------------------------------------------- #
 # 1. URL input (reactive Streamlit text input)
