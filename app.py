@@ -76,6 +76,38 @@ if "GOOGLE_MAPS_API_KEY" not in os.environ:
         )
 
 # --------------------------------------------------------------------------- #
+# Display settings – unit toggles
+# --------------------------------------------------------------------------- #
+ISK_TO_USD_RATE = 135.0  # Approximate exchange rate (1 USD ≈ 135 ISK)
+
+
+def _c_to_f(c):
+    """Convert Celsius to Fahrenheit, preserving NaN."""
+    if pd.isna(c):
+        return c
+    return c * 9 / 5 + 32
+
+
+def _isk_to_usd(isk):
+    """Convert ISK to USD, preserving NaN."""
+    if pd.isna(isk):
+        return isk
+    return isk / ISK_TO_USD_RATE
+
+
+st.markdown("---")
+col1, col2 = st.columns(2)
+with col1:
+    temp_f = st.toggle("🌡️ Fahrenheit", value=False)
+with col2:
+    currency_usd = st.toggle("💰 USD", value=False)
+st.markdown("---")
+
+temp_unit = "°F" if temp_f else "°C"
+currency = "USD" if currency_usd else "ISK"
+
+
+# --------------------------------------------------------------------------- #
 # 1. URL input (reactive Streamlit text input)
 # --------------------------------------------------------------------------- #
 st.markdown("## 📍 Route input")
@@ -226,11 +258,32 @@ else:
         ORDER BY price_isk
     """).df()
 
+    # ---- Create display-ready copies (with unit conversions) -----------
+    df_wx_display = df_wx.copy()
+    if temp_unit == "°F":
+        temp_cols = [c for c in df_wx_display.columns if c.endswith("_c")]
+        for col in temp_cols:
+            df_wx_display[col] = df_wx_display[col].apply(
+                lambda x: _c_to_f(x) if pd.notna(x) else x
+            )
+        df_wx_display = df_wx_display.rename(
+            columns={c: c.replace("_c", "_f") for c in temp_cols}
+        )
+
+    df_fuel_display = df_fuel.copy()
+    if currency == "USD":
+        price_cols = [c for c in df_fuel_display.columns if c.endswith("_isk")]
+        for col in price_cols:
+            df_fuel_display[col] = df_fuel_display[col] / ISK_TO_USD_RATE
+        df_fuel_display = df_fuel_display.rename(
+            columns={c: c.replace("_isk", "_usd") for c in price_cols}
+        )
+
     # ---- Display raw DuckDB result tables ------------------------------
     with st.expander("📋 Weather Telemetry — DuckDB Query Results", expanded=False):
-        st.dataframe(df_wx, use_container_width=True)
+        st.dataframe(df_wx_display, use_container_width=True)
     with st.expander("⛽ Fuel Stations — DuckDB Query Results", expanded=False):
-        st.dataframe(df_fuel, use_container_width=True)
+        st.dataframe(df_fuel_display, use_container_width=True)
 
     st.markdown("---")
 
@@ -272,9 +325,15 @@ else:
 
     kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
     kpi1.metric("🛡️ Route Risk", risk_label, risk_desc)
-    kpi2.metric("🌡️ Avg Temperature", f"{avg_temp:.1f}°C")
+    if temp_unit == "°F":
+        kpi2.metric("🌡️ Avg Temperature", f"{_c_to_f(avg_temp):.1f}°F")
+    else:
+        kpi2.metric("🌡️ Avg Temperature", f"{avg_temp:.1f}°C")
     kpi3.metric("🛣️ Roads Open", f"{open_count}/{total_stations}")
-    kpi4.metric("⛽ Cheapest Fuel", f"{min_fuel:.1f} ISK/L", cheapest_name)
+    if currency == "USD":
+        kpi4.metric("⛽ Cheapest Fuel", f"${_isk_to_usd(min_fuel):.2f}/L", cheapest_name)
+    else:
+        kpi4.metric("⛽ Cheapest Fuel", f"{min_fuel:.1f} ISK/L", cheapest_name)
     kpi5.metric("💨 Max Wind Gust", f"{max_gust:.1f} m/s")
 
     st.markdown("---")
@@ -451,53 +510,59 @@ else:
         "Costco": "#06b6d4",
     }
 
-    df_fuel_top = df_fuel.sort_values("price_isk", ascending=True).head(15)
+    # --- Unit-aware column & label helpers ---
+    price_col = "price_usd" if currency == "USD" else "price_isk"
+    discount_col = "discount_price_usd" if currency == "USD" else "discount_price_isk"
+    price_unit = "USD/L" if currency == "USD" else "ISK/L"
+    price_prefix = "$" if currency == "USD" else ""
+
+    df_fuel_top = df_fuel_display.sort_values(price_col, ascending=True).head(15)
     bar_colors = [brand_colors.get(c, "#6b7280") for c in df_fuel_top["company"]]
 
     fig_fuel = go.Figure()
 
     fig_fuel.add_trace(go.Bar(
         y=df_fuel_top["station_name"],
-        x=df_fuel_top["price_isk"],
+        x=df_fuel_top[price_col],
         orientation="h",
         marker_color=bar_colors,
         text=df_fuel_top.apply(
-            lambda r: f"{r['price_isk']:.1f} ISK/L  •  {r['company']}", axis=1
+            lambda r: f"{price_prefix}{r[price_col]:.1f} {price_unit}  •  {r['company']}", axis=1
         ),
         textposition="outside",
         textfont=dict(size=11),
         name="Regular Price",
         hovertemplate=(
             "<b>%{y}</b><br>"
-            "Price: %{x:.1f} ISK/L<br>"
+            f"Price: %{{x:.1f}} {price_unit}<br>"
             "<extra></extra>"
         ),
     ))
 
     # Discount price star markers
-    has_discount = df_fuel_top["discount_price_isk"].notna()
+    has_discount = df_fuel_top[discount_col].notna()
     if has_discount.any():
         fig_fuel.add_trace(go.Scatter(
             y=df_fuel_top.loc[has_discount, "station_name"],
-            x=df_fuel_top.loc[has_discount, "discount_price_isk"],
+            x=df_fuel_top.loc[has_discount, discount_col],
             mode="markers+text",
             marker=dict(
                 size=14, color="#fbbf24", symbol="star",
                 line=dict(width=1, color="#000"),
             ),
-            text=df_fuel_top.loc[has_discount, "discount_price_isk"].apply(
+            text=df_fuel_top.loc[has_discount, discount_col].apply(
                 lambda v: f"{v:.1f}"
             ),
             textposition="middle left",
             textfont=dict(size=10, color="#fbbf24"),
             name="Discount Price",
-            hovertemplate="Discount: %{x:.1f} ISK/L<extra></extra>",
+            hovertemplate=f"Discount: %{{x:.1f}} {price_unit}<extra></extra>",
         ))
 
     fig_fuel.update_layout(
         template="plotly_dark",
         height=max(420, len(df_fuel_top) * 36),
-        xaxis_title="Price (ISK/L)",
+        xaxis_title=f"Price ({price_unit})",
         yaxis_title="",
         showlegend=bool(has_discount.any()),
         legend=dict(
