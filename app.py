@@ -43,13 +43,14 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-from src.interface.directions import get_directions
+from src.interface.directions import get_directions, inject_ring_road_waypoints
 from src.interface.maps_url_interface import (
     DEFAULT_MAPS_URL,
     acquire_google_maps_url,
     parse_google_maps_url,
     validate_google_maps_url,
 )
+from src.ingestion.vedur_station_mapper import VedurRouteWeatherMapper
 
 st.set_page_config(
     page_title="Iceland Ring Road Optimizer",
@@ -75,6 +76,19 @@ if "GOOGLE_MAPS_API_KEY" not in os.environ:
         st.sidebar.warning(
             "Put your `GOOGLE_MAPS_API_KEY` in `.env` (project root) or `.streamlit/secrets.toml` before fetching directions."
         )
+
+# Route options
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛣️ Route Options")
+auto_inject = st.sidebar.checkbox(
+    "🛣️ Auto-inject Ring Road waypoints",
+    value=True,
+    help=(
+        "Automatically adds major towns along Route 1 for long routes (>200 km) "
+        "to keep Google Maps on the Ring Road. "
+        "Disable for Westfjords, Snæfellsnes, interior routes, or custom paths."
+    )
+)
 
 # --------------------------------------------------------------------------- #
 # Display settings – unit toggles
@@ -179,13 +193,23 @@ if "directions" not in st.session_state:
 if st.session_state.directions is None:
     if st.button("🚗 Fetch directions", type="primary"):
         with st.spinner("Calling Google Directions API…"):
+            # Conditionally inject Ring Road waypoints
+            if auto_inject:
+                injected_waypoints = inject_ring_road_waypoints(
+                    origin=route_info["origin"],
+                    destination=route_info["destination"],
+                    existing_waypoints=route_info["waypoints"],
+                )
+            else:
+                injected_waypoints = route_info["waypoints"] or []
             directions = get_directions(
                 origin=route_info["origin"],
                 destination=route_info["destination"],
-                waypoints=route_info["waypoints"],
+                waypoints=injected_waypoints,
             )
         st.session_state.directions = directions
         st.session_state.route_info = route_info
+        st.session_state.injected_waypoints = injected_waypoints
         if not directions:
             st.error("❌ Directions API call failed. Check your GOOGLE_MAPS_API_KEY and URL.")
 
@@ -200,10 +224,22 @@ st.markdown("## 🗺️ Route summary")
 col1, col2, col3 = st.columns(3)
 col1.metric("Total distance", directions["total_distance_text"])
 col2.metric("Estimated drive time", directions["total_duration_text"])
+
+# Show waypoint info
+injected = st.session_state.get("injected_waypoints", [])
+original_count = len(route_info["raw_places"]) if route_info.get("raw_places") else 0
+injected_count = len(injected) - (len(route_info.get("waypoints") or []))
 col3.metric(
     "Stops (incl. waypoints)",
-    len(route_info["raw_places"]),
+    len(injected) + 2,  # +2 for origin + destination
+    help=f"Original: {original_count} • Injected Ring Road towns: {injected_count}"
 )
+
+# Show injected waypoints in expander
+if injected:
+    with st.expander("🛣️ Injected Ring Road waypoints (auto-added for long routes)"):
+        for i, wp in enumerate(injected):
+            st.write(f"{i+1}. {wp}")
 
 # Simple route map from sampled leg points.
 try:
@@ -223,7 +259,18 @@ except Exception as exc:  # pragma: no cover
     st.caption(f"Map preview unavailable: {exc}")
 
 # --------------------------------------------------------------------------- #
-# 5. Route Analytics Dashboard (DuckDB)
+# 5. Route-ordered station mapping (Vedur API)
+# --------------------------------------------------------------------------- #
+# Run the Vedur pipeline to get stations in actual route order
+with st.spinner("🔄 Mapping weather stations along route..."):
+    mapper = VedurRouteWeatherMapper()
+    matched_stations, _ = mapper.get_route_weather_pipeline(directions)
+
+# Build route-order index: station_name -> route position
+route_order = {s["station_name"]: i for i, s in enumerate(matched_stations)}
+
+# --------------------------------------------------------------------------- #
+# 6. Route Analytics Dashboard (DuckDB)
 # --------------------------------------------------------------------------- #
 st.markdown("---")
 st.markdown("## 📊 Route Analytics Dashboard")
@@ -283,6 +330,14 @@ else:
         FROM read_parquet('{_fuel_path}')
         ORDER BY price_isk
     """).df()
+
+    # ---- Sort by route order -----------------------------------------------
+    # Use the route_order mapping from VedurRouteWeatherMapper
+    df_wx["route_order"] = df_wx["station_name"].map(route_order)
+    df_wx = df_wx.sort_values("route_order", na_position="last").drop(columns=["route_order"]).reset_index(drop=True)
+
+    df_fuel["route_order"] = df_fuel["station_name"].map(route_order)
+    df_fuel = df_fuel.sort_values("route_order", na_position="last").drop(columns=["route_order"]).reset_index(drop=True)
 
     # ---- Create display-ready copies (with unit conversions) -----------
     df_wx_display = df_wx.copy()
