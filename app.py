@@ -345,16 +345,133 @@ if user_waypoints:
         for i, wp in enumerate(user_waypoints):
             st.write(f"{i+1}. {wp}")
 
-# Simple route map from sampled leg points.
+# Route map with origin, destination, and waypoint markers
 try:
+    # Collect route polyline points
     points = [s["start_location"] for leg in directions["legs"] for s in leg["steps"]]
     if points:
         pts = pd.DataFrame(points)
+        
+        # Build marker data: origin, waypoints, destination
+        marker_data = []
+        # Origin
+        marker_data.append({
+            "lat": directions["legs"][0]["start_location"]["lat"],
+            "lon": directions["legs"][0]["start_location"]["lng"],
+            "name": route_info["origin"],
+            "type": "origin"
+        })
+        # Waypoints (intermediate stops)
+        for i, leg in enumerate(directions["legs"][:-1]):
+            marker_data.append({
+                "lat": leg["end_location"]["lat"],
+                "lon": leg["end_location"]["lng"],
+                "name": leg["end_address"],
+                "type": "waypoint"
+            })
+        # Destination
+        last_leg = directions["legs"][-1]
+        marker_data.append({
+            "lat": last_leg["end_location"]["lat"],
+            "lon": last_leg["end_location"]["lng"],
+            "name": route_info["destination"],
+            "type": "destination"
+        })
+        
+        markers = pd.DataFrame(marker_data)
+        
+        # Create map with route line + markers using CartoDB Positron (lighter, English labels)
         fig = px.line_mapbox(
-            pts, lat="lat", lon="lng", zoom=6, height=420,
-            title="Route path",
+            pts, lat="lat", lon="lng", zoom=6, height=480,
+            title="Route Overview",
         )
-        fig.update_layout(mapbox_style="open-street-map", margin=dict(l=0, r=0, t=30, b=0))
+        # Hide legend for the route line
+        fig.data[0].update(showlegend=False, name="Route", hoverinfo="skip")
+        
+        # Add origin marker (green)
+        origin_m = markers[markers["type"] == "origin"]
+        if not origin_m.empty:
+            fig.add_trace(px.scatter_mapbox(
+                origin_m, lat="lat", lon="lon", 
+                hover_name="name",
+                color_discrete_sequence=["#22c55e"],
+                size_max=16,
+                zoom=6,
+            ).data[0])
+            fig.data[-1].update(
+                marker=dict(size=16, color="#22c55e", symbol="circle"),
+                name="🟢 Origin",
+                showlegend=True,
+                hovertemplate="<b>%{hovertext}</b><br>Origin<extra></extra>",
+            )
+        
+        # Add waypoint markers (blue)
+        wp_m = markers[markers["type"] == "waypoint"]
+        if not wp_m.empty:
+            fig.add_trace(px.scatter_mapbox(
+                wp_m, lat="lat", lon="lon",
+                hover_name="name",
+                color_discrete_sequence=["#3b82f6"],
+                size_max=14,
+                zoom=6,
+            ).data[0])
+            fig.data[-1].update(
+                marker=dict(size=14, color="#3b82f6", symbol="circle"),
+                name="🔵 Waypoint",
+                showlegend=True,
+                hovertemplate="<b>%{hovertext}</b><br>Waypoint<extra></extra>",
+            )
+        
+        # Add destination marker (red)
+        dest_m = markers[markers["type"] == "destination"]
+        if not dest_m.empty:
+            fig.add_trace(px.scatter_mapbox(
+                dest_m, lat="lat", lon="lon",
+                hover_name="name",
+                color_discrete_sequence=["#ef4444"],
+                size_max=16,
+                zoom=6,
+            ).data[0])
+            fig.data[-1].update(
+                marker=dict(size=16, color="#ef4444", symbol="circle"),
+                name="🔴 Destination",
+                showlegend=True,
+                hovertemplate="<b>%{hovertext}</b><br>Destination<extra></extra>",
+            )
+        
+        # Add "Iceland" label at center of country
+        iceland_label = pd.DataFrame({
+            "lat": [64.96],
+            "lon": [-19.02],
+            "text": ["<b>Iceland</b>"]
+        })
+        fig.add_trace(px.scatter_mapbox(
+            iceland_label, lat="lat", lon="lon",
+            text="text",
+            color_discrete_sequence=["rgba(0,0,0,0)"],
+            zoom=6,
+        ).data[0])
+        fig.data[-1].update(
+            mode="text",
+            textfont=dict(size=20, color="#1f2937", family="Arial Black"),
+            textposition="middle center",
+            showlegend=False,
+            hoverinfo="skip",
+        )
+        
+        fig.update_layout(
+            mapbox_style="carto-positron",  # Lighter style with English labels
+            margin=dict(l=0, r=0, t=50, b=0),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom", y=1.02,
+                xanchor="right", x=1,
+                bgcolor="rgba(255,255,255,0.95)",
+                bordercolor="#9ca3af",
+                borderwidth=1,
+                font=dict(color="#1f2937", size=12),  # Dark text for readability
+            ),
+        )
         mapbox_token = os.environ.get("MAPBOX_TOKEN", "")
         if mapbox_token:
             fig.update_layout(mapbox_accesstoken=mapbox_token)
