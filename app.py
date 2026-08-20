@@ -40,6 +40,7 @@ _ensure_streamlit_runtime()
 
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
 from src.interface.directions import get_directions
@@ -78,7 +79,27 @@ if "GOOGLE_MAPS_API_KEY" not in os.environ:
 # --------------------------------------------------------------------------- #
 # Display settings – unit toggles
 # --------------------------------------------------------------------------- #
-ISK_TO_USD_RATE = 135.0  # Approximate exchange rate (1 USD ≈ 135 ISK)
+ISK_TO_USD_RATE = 135.0  # Fallback exchange rate (1 USD ≈ 135 ISK)
+
+
+@st.cache_data(ttl=600)
+def _get_isk_rate():
+    """Fetch the live USD→ISK exchange rate (cached for 10 min).
+
+    Falls back to ``ISK_TO_USD_RATE`` when the API is unreachable.
+    Uses open.er-api.com – no API key required.
+    """
+    try:
+        resp = requests.get(
+            "https://open.er-api.com/v6/latest/USD", timeout=5
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("result") == "success" and "ISK" in data.get("rates", {}):
+            return float(data["rates"]["ISK"])
+    except Exception:
+        pass
+    return ISK_TO_USD_RATE
 
 
 def _c_to_f(c):
@@ -88,11 +109,16 @@ def _c_to_f(c):
     return c * 9 / 5 + 32
 
 
-def _isk_to_usd(isk):
-    """Convert ISK to USD, preserving NaN."""
+def _isk_to_usd(isk, rate=None):
+    """Convert ISK to USD, preserving NaN.
+
+    Uses a live exchange rate (cached) unless *rate* is provided.
+    """
     if pd.isna(isk):
         return isk
-    return isk / ISK_TO_USD_RATE
+    if rate is None:
+        rate = _get_isk_rate()
+    return isk / rate
 
 
 st.markdown("---")
@@ -272,9 +298,10 @@ else:
 
     df_fuel_display = df_fuel.copy()
     if currency == "USD":
+        _rate = _get_isk_rate()
         price_cols = [c for c in df_fuel_display.columns if c.endswith("_isk")]
         for col in price_cols:
-            df_fuel_display[col] = df_fuel_display[col] / ISK_TO_USD_RATE
+            df_fuel_display[col] = df_fuel_display[col] / _rate
         df_fuel_display = df_fuel_display.rename(
             columns={c: c.replace("_isk", "_usd") for c in price_cols}
         )
