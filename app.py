@@ -40,6 +40,7 @@ _ensure_streamlit_runtime()
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
@@ -51,7 +52,7 @@ from src.interface.maps_url_interface import (
     validate_google_maps_url,
 )
 from src.ingestion.vedur_station_mapper import VedurRouteWeatherMapper
-from src.ingestion.route_cache import get_or_create_route_data, list_cached_routes, _generate_route_key, clear_route_cache
+from src.ingestion.route_cache import get_route_data, list_cached_routes, _generate_route_key, clear_route_cache
 
 st.set_page_config(
     page_title="Iceland Ring Road Optimizer",
@@ -528,7 +529,7 @@ st.caption(
 # ---- Get or create cached route data (live + cached) ---------------------
 with st.spinner("📡 Loading route data (live weather + fuel prices)..."):
     try:
-        df_wx, df_fuel = get_or_create_route_data(
+        df_wx, df_fuel = get_route_data(
             origin=route_info["origin"],
             destination=route_info["destination"],
             waypoints=route_info["waypoints"],
