@@ -43,7 +43,7 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-from src.interface.directions import get_directions, inject_ring_road_waypoints
+from src.interface.directions import get_directions
 from src.interface.maps_url_interface import (
     DEFAULT_MAPS_URL,
     acquire_google_maps_url,
@@ -77,18 +77,129 @@ if "GOOGLE_MAPS_API_KEY" not in os.environ:
             "Put your `GOOGLE_MAPS_API_KEY` in `.env` (project root) or `.streamlit/secrets.toml` before fetching directions."
         )
 
-# Route options
-st.sidebar.markdown("---")
-st.sidebar.subheader("🛣️ Route Options")
-auto_inject = st.sidebar.checkbox(
-    "🛣️ Auto-inject Ring Road waypoints",
-    value=True,
-    help=(
-        "Automatically adds major towns along Route 1 for long routes (>200 km) "
-        "to keep Google Maps on the Ring Road. "
-        "Disable for Westfjords, Snæfellsnes, interior routes, or custom paths."
-    )
-)
+# --------------------------------------------------------------------------- #
+# Sidebar: Suggested Ring Road stops
+# --------------------------------------------------------------------------- #
+# Major towns along Iceland's Route 1 (Ring Road), clockwise from Reykjavík
+RING_ROAD_TOWNS = [
+    "Reykjavík, Iceland",
+    "Borgarnes, Iceland",
+    "Bifröst, Iceland",
+    "Laugarbakki, Iceland",
+    "Blönduós, Iceland",
+    "Varmahlíð, Iceland",
+    "Akureyri, Iceland",
+    "Goðafoss, Iceland",
+    "Mývatn, Iceland",
+    "Egilsstaðir, Iceland",
+    "Höfn, Iceland",
+    "Kirkjubæjarklaustur, Iceland",
+    "Vík í Mýrdal, Iceland",
+    "Selfoss, Iceland",
+    "Reykjavík, Iceland",  # Full loop
+]
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    import math
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2.0) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(dlon / 2.0) ** 2)
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return R * c
+
+@st.cache_data(ttl=3600)
+def _geocode_towns(towns, api_key):
+    """Batch geocode towns for distance calculations."""
+    results = {}
+    for town in towns:
+        url = "https://maps.googleapis.com/maps/api/geocode/json"
+        params = {"address": town, "key": api_key}
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            data = r.json()
+            if data["status"] == "OK" and data["results"]:
+                loc = data["results"][0]["geometry"]["location"]
+                results[town] = {"lat": loc["lat"], "lng": loc["lng"]}
+        except Exception:
+            pass
+    return results
+
+def get_suggested_ring_road_stops(origin, destination, api_key):
+    """Return Ring Road towns between origin and destination in driving order."""
+    if not api_key or api_key == "your_google_maps_api_key_here":
+        return []
+    
+    # Geocode origin, destination, and all Ring Road towns
+    geo_origin = _geocode_towns([origin], api_key).get(origin)
+    geo_dest = _geocode_towns([destination], api_key).get(destination)
+    geo_towns = _geocode_towns(RING_ROAD_TOWNS, api_key)
+    
+    if not geo_origin or not geo_dest:
+        return []
+    
+    # Find closest Ring Road town to origin and destination
+    def find_closest(geo_point):
+        min_dist = float('inf')
+        closest_idx = 0
+        for i, town in enumerate(RING_ROAD_TOWNS):
+            if town in geo_towns:
+                d = _haversine_km(
+                    geo_point["lat"], geo_point["lng"],
+                    geo_towns[town]["lat"], geo_towns[town]["lng"]
+                )
+                if d < min_dist:
+                    min_dist = d
+                    closest_idx = i
+        return closest_idx
+    
+    origin_idx = find_closest(geo_origin)
+    dest_idx = find_closest(geo_dest)
+    
+    # Determine shorter direction around the ring
+    ring_len = len(RING_ROAD_TOWNS) - 1  # Exclude duplicate Reykjavík at end
+    
+    # Clockwise distance (number of towns)
+    if dest_idx >= origin_idx:
+        cw_towns = RING_ROAD_TOWNS[origin_idx + 1:dest_idx]
+    else:
+        cw_towns = RING_ROAD_TOWNS[origin_idx + 1:] + RING_ROAD_TOWNS[:dest_idx]
+    
+    # Counter-clockwise
+    if origin_idx >= dest_idx:
+        ccw_towns = RING_ROAD_TOWNS[dest_idx + 1:origin_idx]
+    else:
+        ccw_towns = RING_ROAD_TOWNS[dest_idx + 1:] + RING_ROAD_TOWNS[:origin_idx]
+    ccw_towns = list(reversed(ccw_towns))
+    
+    # Return shorter path
+    return cw_towns if len(cw_towns) <= len(ccw_towns) else ccw_towns
+
+# Show suggested stops if we have a parsed route
+if "route_info" in st.session_state and st.session_state.route_info:
+    route_info = st.session_state.route_info
+    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if api_key and api_key != "your_google_maps_api_key_here":
+        suggested = get_suggested_ring_road_stops(
+            route_info["origin"], route_info["destination"], api_key
+        )
+        if suggested:
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("🗺️ Suggested Ring Road stops")
+            st.sidebar.caption(
+                "Add these as stops in Google Maps to keep your route on Route 1. "
+                "Then copy the new URL and paste it here."
+            )
+            stops_text = "\n".join([f"{i+1}. {town}" for i, town in enumerate(suggested)])
+            st.sidebar.text_area(
+                "Copy these towns:",
+                value=stops_text,
+                height=min(200, 30 + len(suggested) * 22),
+                help="Add each as a stop in Google Maps Directions",
+                key="suggested_stops"
+            )
 
 # --------------------------------------------------------------------------- #
 # Display settings – unit toggles
@@ -193,24 +304,18 @@ if "directions" not in st.session_state:
 if st.session_state.directions is None:
     if st.button("🚗 Fetch directions", type="primary"):
         with st.spinner("Calling Google Directions API…"):
-            # Conditionally inject Ring Road waypoints
-            if auto_inject:
-                injected_waypoints = inject_ring_road_waypoints(
-                    origin=route_info["origin"],
-                    destination=route_info["destination"],
-                    existing_waypoints=route_info["waypoints"],
-                )
-            else:
-                injected_waypoints = route_info["waypoints"] or []
+            # Use waypoints from user's Google Maps URL only
+            user_waypoints = route_info["waypoints"] or []
             directions = get_directions(
                 origin=route_info["origin"],
                 destination=route_info["destination"],
-                waypoints=injected_waypoints,
+                waypoints=user_waypoints,
             )
         st.session_state.directions = directions
         st.session_state.route_info = route_info
-        st.session_state.injected_waypoints = injected_waypoints
+        st.session_state.user_waypoints = user_waypoints
         if not directions:
+            st.error("❌ Directions API call failed. Check your GOOGLE_MAPS_API_KEY and URL.")
             st.error("❌ Directions API call failed. Check your GOOGLE_MAPS_API_KEY and URL.")
 
 directions = st.session_state.get("directions")
@@ -226,19 +331,18 @@ col1.metric("Total distance", directions["total_distance_text"])
 col2.metric("Estimated drive time", directions["total_duration_text"])
 
 # Show waypoint info
-injected = st.session_state.get("injected_waypoints", [])
-original_count = len(route_info["raw_places"]) if route_info.get("raw_places") else 0
-injected_count = len(injected) - (len(route_info.get("waypoints") or []))
+user_waypoints = st.session_state.get("user_waypoints", [])
+total_stops = len(user_waypoints) + 2  # +2 for origin + destination
 col3.metric(
     "Stops (incl. waypoints)",
-    len(injected) + 2,  # +2 for origin + destination
-    help=f"Original: {original_count} • Injected Ring Road towns: {injected_count}"
+    total_stops,
+    help=f"From your Google Maps URL: {len(route_info.get('raw_places') or [])} places"
 )
 
-# Show injected waypoints in expander
-if injected:
-    with st.expander("🛣️ Injected Ring Road waypoints (auto-added for long routes)"):
-        for i, wp in enumerate(injected):
+# Show user waypoints in expander
+if user_waypoints:
+    with st.expander("🛣️ Your waypoints (from Google Maps URL)"):
+        for i, wp in enumerate(user_waypoints):
             st.write(f"{i+1}. {wp}")
 
 # Simple route map from sampled leg points.
