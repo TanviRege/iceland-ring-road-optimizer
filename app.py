@@ -51,6 +51,7 @@ from src.interface.maps_url_interface import (
     validate_google_maps_url,
 )
 from src.ingestion.vedur_station_mapper import VedurRouteWeatherMapper
+from src.ingestion.route_cache import get_or_create_route_data, list_cached_routes, _generate_route_key, clear_route_cache
 
 st.set_page_config(
     page_title="Iceland Ring Road Optimizer",
@@ -200,6 +201,30 @@ if "route_info" in st.session_state and st.session_state.route_info:
                 help="Add each as a stop in Google Maps Directions",
                 key="suggested_stops"
             )
+
+# --------------------------------------------------------------------------- #
+# Sidebar: Cache Management
+# --------------------------------------------------------------------------- #
+st.sidebar.markdown("---")
+st.sidebar.subheader("💾 Route Cache")
+cached_routes = list_cached_routes()
+if cached_routes:
+    st.sidebar.caption(f"Found {len(cached_routes)} cached route(s)")
+    for cr in cached_routes:
+        with st.sidebar.expander(f"🗺️ {cr['stops'][0] if cr['stops'] else cr['route_key']} → {cr['stops'][-1] if len(cr['stops']) > 1 else '...'}", expanded=False):
+            st.write(f"**Stations:** {cr['stations']}")
+            st.write(f"**Fuel stops:** {cr['fuel_stops']}")
+            st.write(f"**Created:** {cr['created'][:19]}")
+            if st.button("🗑️ Delete", key=f"del_{cr['route_key']}"):
+                clear_route_cache(cr['route_key'])
+                st.rerun()
+else:
+    st.sidebar.caption("No cached routes yet")
+
+if st.sidebar.button("🗑️ Clear All Cache"):
+    cleared = clear_route_cache()
+    st.sidebar.success(f"Cleared {cleared} cached route(s)")
+    st.rerun()
 
 # --------------------------------------------------------------------------- #
 # Display settings – unit toggles
@@ -496,97 +521,68 @@ route_order = {s["station_name"]: i for i, s in enumerate(matched_stations)}
 st.markdown("---")
 st.markdown("## 📊 Route Analytics Dashboard")
 st.caption(
-    "Weather conditions and fuel economics from the DuckDB analytics pipeline. "
+    "Weather conditions and fuel economics from live APIs with route-based caching. "
     "Data sourced from Icelandic Met Office (Veður) and Gasvaktin fuel price feeds."
 )
 
-from pathlib import Path
-import plotly.graph_objects as go
+# ---- Get or create cached route data (live + cached) ---------------------
+with st.spinner("📡 Loading route data (live weather + fuel prices)..."):
+    try:
+        df_wx, df_fuel = get_or_create_route_data(
+            origin=route_info["origin"],
+            destination=route_info["destination"],
+            waypoints=route_info["waypoints"],
+            api_key=os.environ.get("GOOGLE_MAPS_API_KEY"),
+        )
+    except Exception as exc:
+        st.error(f"❌ Failed to load route data: {exc}")
+        st.stop()
 
-DATA_DIR = Path(__file__).parent / "data"
-_telemetry_path = DATA_DIR / "iceland_raw_telemetry.parquet"
-_fuel_path = DATA_DIR / "iceland_fuel_stations.parquet"
+# ---- Sort by route order (from VedurRouteWeatherMapper) ------------------
+df_wx["route_order"] = df_wx["station_name"].map(route_order)
+df_wx = df_wx.sort_values("route_order", na_position="last").drop(columns=["route_order"]).reset_index(drop=True)
 
-if not _telemetry_path.exists() or not _fuel_path.exists():
-    st.warning(
-        "⚠️ Parquet data files not found in `data/`. "
-        "Run the data ingestion pipeline first."
+df_fuel["route_order"] = df_fuel["station_name"].map(route_order)
+df_fuel = df_fuel.sort_values("route_order", na_position="last").drop(columns=["route_order"]).reset_index(drop=True)
+
+# ---- Create display-ready copies (with unit conversions) -----------
+df_wx_display = df_wx.copy()
+if temp_unit == "°F":
+    temp_cols = [c for c in df_wx_display.columns if c.endswith("_c")]
+    for col in temp_cols:
+        df_wx_display[col] = df_wx_display[col].apply(
+            lambda x: _c_to_f(x) if pd.notna(x) else x
+        )
+    df_wx_display = df_wx_display.rename(
+        columns={c: c.replace("_c", "_f") for c in temp_cols}
     )
-else:
-    import duckdb
 
-    # ---- Load data via DuckDB ------------------------------------------
-    df_wx = duckdb.sql(f"""
-        SELECT
-            waypoint_id,
-            station_name,
-            stop_name,
-            air_temp_c,
-            air_temp_max_c,
-            air_temp_min_c,
-            wind_speed_avg_ms,
-            wind_speed_max_ms,
-            wind_gust_max_ms,
-            wind_dir_deg,
-            wind_dir_cardinal,
-            relative_humidity_pct,
-            sea_level_pressure_hpa,
-            road_surface_temp_c,
-            road_surface_temp_max_c,
-            road_surface_temp_min_c,
-            road_status,
-            observation_time_utc
-        FROM read_parquet('{_telemetry_path}')
-        ORDER BY waypoint_id
-    """).df()
+df_fuel_display = df_fuel.copy()
+if currency == "USD":
+    _rate = _get_isk_rate()
+    price_cols = [c for c in df_fuel_display.columns if c.endswith("_isk")]
+    for col in price_cols:
+        df_fuel_display[col] = df_fuel_display[col] / _rate
+    df_fuel_display = df_fuel_display.rename(
+        columns={c: c.replace("_isk", "_usd") for c in price_cols}
+    )
 
-    df_fuel = duckdb.sql(f"""
-        SELECT
-            station_name,
-            company,
-            price_isk,
-            regular_price_isk,
-            discount_price_isk,
-            distance_km
-        FROM read_parquet('{_fuel_path}')
-        ORDER BY price_isk
-    """).df()
+# ---- Display raw data tables ------------------------------
+with st.expander("📋 Weather Telemetry — Live Data (Cached)", expanded=False):
+    st.dataframe(df_wx_display, use_container_width=True)
+with st.expander("⛽ Fuel Stations — Live Data (Cached)", expanded=False):
+    st.dataframe(df_fuel_display, use_container_width=True)
 
-    # ---- Sort by route order -----------------------------------------------
-    # Use the route_order mapping from VedurRouteWeatherMapper
-    df_wx["route_order"] = df_wx["station_name"].map(route_order)
-    df_wx = df_wx.sort_values("route_order", na_position="last").drop(columns=["route_order"]).reset_index(drop=True)
-
-    df_fuel["route_order"] = df_fuel["station_name"].map(route_order)
-    df_fuel = df_fuel.sort_values("route_order", na_position="last").drop(columns=["route_order"]).reset_index(drop=True)
-
-    # ---- Create display-ready copies (with unit conversions) -----------
-    df_wx_display = df_wx.copy()
-    if temp_unit == "°F":
-        temp_cols = [c for c in df_wx_display.columns if c.endswith("_c")]
-        for col in temp_cols:
-            df_wx_display[col] = df_wx_display[col].apply(
-                lambda x: _c_to_f(x) if pd.notna(x) else x
-            )
-        df_wx_display = df_wx_display.rename(
-            columns={c: c.replace("_c", "_f") for c in temp_cols}
-        )
-
-    df_fuel_display = df_fuel.copy()
-    if currency == "USD":
-        _rate = _get_isk_rate()
-        price_cols = [c for c in df_fuel_display.columns if c.endswith("_isk")]
-        for col in price_cols:
-            df_fuel_display[col] = df_fuel_display[col] / _rate
-        df_fuel_display = df_fuel_display.rename(
-            columns={c: c.replace("_isk", "_usd") for c in price_cols}
-        )
-
-    # ---- Display raw DuckDB result tables ------------------------------
-    with st.expander("📋 Weather Telemetry — DuckDB Query Results", expanded=False):
-        st.dataframe(df_wx_display, use_container_width=True)
-    with st.expander("⛽ Fuel Stations — DuckDB Query Results", expanded=False):
-        st.dataframe(df_fuel_display, use_container_width=True)
+# Show cache info
+cached_routes = list_cached_routes()
+if cached_routes:
+    current_key = _generate_route_key(
+        route_info["origin"], route_info["destination"], route_info["waypoints"]
+    )
+    for cr in cached_routes:
+        if cr["route_key"] == current_key:
+            st.caption(f"📦 Using cached data: {cr['stations']} stations, {cr['fuel_stops']} fuel stops (created {cr['created'][:19]})")
+            break
 
     st.markdown("---")
 
