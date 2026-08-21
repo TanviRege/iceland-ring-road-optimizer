@@ -109,14 +109,18 @@ def _create_telemetry_from_live_data(
     matched_stations: List[Dict],
     weather_df: pd.DataFrame,
     fuel_stations: List[Dict],
-    route_order: Dict
+    route_order: Dict,
+    forecast_df: pd.DataFrame = None
 ) -> pd.DataFrame:
     records = []
-    fuel_by_station = {}
-    for fs in fuel_stations:
-        name = fs.get("station_name", "").strip().lower()
-        if name:
-            fuel_by_station[name] = fs
+    from src.ingestion.vedur_station_mapper import haversine_km
+    
+    # Build forecast lookup by station_name
+    forecast_by_station = {}
+    if forecast_df is not None and not forecast_df.empty:
+        for _, row in forecast_df.iterrows():
+            forecast_by_station[row["station_name"].strip().lower()] = row
+    
     route_waypoints = _directions_to_waypoints(directions)
     for i, station in enumerate(matched_stations):
         station_name = station.get("station_name", "")
@@ -126,12 +130,31 @@ def _create_telemetry_from_live_data(
             matches = weather_df[weather_df["station_name"].str.strip().str.lower() == station_name_lower]
             if not matches.empty:
                 weather_row = matches.iloc[0]
-        fuel_info = fuel_by_station.get(station_name_lower, {})
+        
+        # Get forecast row for this station
+        forecast_row = forecast_by_station.get(station_name_lower)
+        
+        # Find nearest fuel station by geographic proximity
+        fuel_info = {}
         lat = station.get("station_lat") or station.get("lat")
         lon = station.get("station_lon") or station.get("lon")
+        if lat and lon and fuel_stations:
+            min_dist = float("inf")
+            for fs in fuel_stations:
+                fs_lat = fs.get("lat") or fs.get("geo", {}).get("lat")
+                fs_lon = fs.get("lon") or fs.get("geo", {}).get("lon")
+                if fs_lat and fs_lon:
+                    d = haversine_km(lat, lon, fs_lat, fs_lon)
+                    if d < min_dist:
+                        min_dist = d
+                        fuel_info = fs
+            # Only use if within reasonable distance (30km)
+            if min_dist > 30.0:
+                fuel_info = {}
+        
+        # Calculate distance from station to nearest point on route
         distance_km = 0.0
         if lat and lon and route_waypoints:
-            from src.ingestion.vedur_station_mapper import haversine_km
             min_dist = float("inf")
             for rp in route_waypoints:
                 d = haversine_km(lat, lon, rp[0], rp[1])
@@ -173,6 +196,15 @@ def _create_telemetry_from_live_data(
             "observation_time_utc": weather_row.get("observation_time_utc") if weather_row is not None else pd.Timestamp.now().isoformat(),
             "matched_point": station_name,
             "distance_km": distance_km,
+            # Forecast fields (what weather will be like at ETA)
+            "forecast_temp_c": forecast_row.get("forecast_temp_c") if forecast_row is not None else None,
+            "forecast_wind_dir_deg": forecast_row.get("forecast_wind_dir_deg") if forecast_row is not None else None,
+            "forecast_wind_dir_cardinal": forecast_row.get("forecast_wind_dir_cardinal") if forecast_row is not None else None,
+            "forecast_weather_type": forecast_row.get("forecast_weather_type") if forecast_row is not None else None,
+            "forecast_valid_time_utc": forecast_row.get("forecast_valid_time_utc") if forecast_row is not None else None,
+            "eta_utc": forecast_row.get("eta_utc") if forecast_row is not None else None,
+            "distance_from_origin_km": forecast_row.get("distance_from_origin_km") if forecast_row is not None else None,
+            "time_diff_hours": forecast_row.get("time_diff_hours") if forecast_row is not None else None,
         }
         records.append(record)
     df = pd.DataFrame(records)
@@ -181,11 +213,31 @@ def _create_telemetry_from_live_data(
     return df
 
 
-def _create_fuel_stations_df(fuel_stations: List[Dict]) -> pd.DataFrame:
+def _create_fuel_stations_df(fuel_stations: List[Dict], directions: Dict = None) -> pd.DataFrame:
+    """Create fuel stations dataframe with distance from origin for route ordering."""
+    if not fuel_stations:
+        return pd.DataFrame()
+    
     records = []
     for fs in fuel_stations:
         base_price = fs.get("price") or fs.get("regular_price")
         discount_price = fs.get("discount_price")
+        
+        # Calculate distance from origin if directions provided
+        distance_from_origin_km = fs.get("distance_from_origin_km", 0.0)
+        if distance_from_origin_km == 0.0 and directions:
+            # Try to calculate from near_waypoint coordinates
+            near_lat = fs.get("near_waypoint_lat")
+            near_lon = fs.get("near_waypoint_lon")
+            if near_lat and near_lon:
+                # Use accumulated distance from the route sample points
+                from src.ingestion.vedur_station_mapper import haversine_km
+                # Simple approximation: use distance from first waypoint (origin)
+                route_waypoints = _directions_to_waypoints(directions)
+                if route_waypoints:
+                    origin_lat, origin_lon = route_waypoints[0]
+                    distance_from_origin_km = round(haversine_km(origin_lat, origin_lon, near_lat, near_lon), 2)
+        
         records.append({
             "station_name": fs.get("station_name", ""),
             "company": fs.get("company", ""),
@@ -193,8 +245,14 @@ def _create_fuel_stations_df(fuel_stations: List[Dict]) -> pd.DataFrame:
             "regular_price_isk": base_price,
             "discount_price_isk": discount_price,
             "distance_km": fs.get("distance_km", 0),
+            "distance_from_origin_km": distance_from_origin_km,
         })
-    return pd.DataFrame(records)
+    
+    df = pd.DataFrame(records)
+    # Sort by distance from origin (route order)
+    if not df.empty and "distance_from_origin_km" in df.columns:
+        df = df.sort_values("distance_from_origin_km").reset_index(drop=True)
+    return df
 def get_route_data(
     origin: str,
     destination: str,
@@ -216,7 +274,7 @@ def get_route_data(
             raise ValueError("Failed to get directions from Google Maps API")
         
         mapper = VedurRouteWeatherMapper()
-        matched_stations, _ = mapper.get_route_weather_pipeline(directions)
+        matched_stations, weather_df, forecast_df = mapper.get_route_weather_pipeline_with_forecast(directions)
         route_order = {s["station_name"]: i for i, s in enumerate(matched_stations)}
         
         structure = {
@@ -260,7 +318,7 @@ def get_route_data(
         print(f"Fetching live fuel data: {route_key}")
         route_waypoints = _directions_to_waypoints(directions)
         fuel_stations = get_fuel_price_at_route(route_waypoints, max_distance_km=30.0)
-        fuel_df = _create_fuel_stations_df(fuel_stations)
+        fuel_df = _create_fuel_stations_df(fuel_stations, directions)
         if not fuel_df.empty:
             fuel_df.to_parquet(fuel_path, index=False)
             _save_metadata(metadata_path, "fuel")
@@ -268,7 +326,8 @@ def get_route_data(
         fuel_stations = fuel_df.to_dict("records")
     
     telemetry_df = _create_telemetry_from_live_data(
-        directions, structure["matched_stations"], weather_df, fuel_stations, structure["route_order"]
+        directions, structure["matched_stations"], weather_df, fuel_stations, structure["route_order"],
+        forecast_df
     )
     
     print(f"Route data ready: {route_key} ({len(telemetry_df)} stations, {len(fuel_df)} fuel stops)")

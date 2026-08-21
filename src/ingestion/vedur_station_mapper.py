@@ -10,6 +10,7 @@ import math
 import logging
 import requests
 import pandas as pd
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 
 logging.basicConfig(level=logging.INFO)
@@ -255,6 +256,157 @@ class VedurRouteWeatherMapper:
         df_renamed = df.rename(columns=VEDUR_COLUMN_MAP)
         return df_renamed
 
+    def fetch_forecast_for_stations(self, station_ids: List[int]) -> pd.DataFrame:
+        """
+        Fetch weather forecasts from Vedur API for a list of station IDs.
+        """
+        url = f"{VEDUR_BASE_URL}/forecasts/text"
+        all_forecasts = []
+
+        for st_id in station_ids:
+            params = {
+                "station_id": st_id,
+            }
+            try:
+                r = requests.get(url, params=params, timeout=10)
+                r.raise_for_status()
+                data = r.json()
+                if data:
+                    all_forecasts.extend(data)
+                    logger.info(f"✅ Fetched forecast for Station {st_id}")
+                else:
+                    logger.warning(f"⚠️ Station {st_id}: No forecast data returned")
+            except Exception as e:
+                logger.error(f"❌ Failed to fetch forecast for station {st_id}: {e}")
+
+        if not all_forecasts:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_forecasts)
+        # Rename forecast columns with 'forecast_' prefix to avoid collision with observations
+        rename_map = {col: f"forecast_{col}" for col in df.columns if not col.startswith("forecast_")}
+        df_renamed = df.rename(columns=rename_map)
+        return df_renamed
+
+    def calculate_station_etas(
+        self, 
+        directions_data: Dict[str, Any], 
+        matched_stations: List[Dict[str, Any]],
+        departure_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Calculate Estimated Time of Arrival (ETA) at each weather station along the route.
+        
+        Uses the route's total distance/duration and each station's distance along the route
+        to proportionally calculate when the user will reach each station.
+        """
+        if departure_time is None:
+            departure_time = datetime.now(timezone.utc)
+        
+        total_distance_km = directions_data.get("total_distance_km", 0)
+        total_duration_hours = directions_data.get("total_duration_hours", 0)
+        
+        if total_distance_km == 0 or total_duration_hours == 0:
+            logger.warning("Route has zero distance/duration, cannot calculate ETAs")
+            return matched_stations
+        
+        # Extract route sample points with accumulated distance
+        route_sample_points = self.extract_route_sample_points(directions_data, sample_interval_km=15.0)
+        
+        # Build cumulative distance map for each station's matched route point
+        station_distances = {}
+        for station in matched_stations:
+            label = station.get("matched_route_label", "")
+            # Find the sample point with matching label
+            for pt in route_sample_points:
+                if pt["label"] == label:
+                    station_distances[station["station_id"]] = pt.get("accumulated_km", 0)
+                    break
+        
+        # Calculate ETA for each station
+        for station in matched_stations:
+            st_id = station["station_id"]
+            dist_from_origin = station_distances.get(st_id, 0)
+            
+            if total_distance_km > 0:
+                progress_ratio = dist_from_origin / total_distance_km
+                progress_ratio = max(0, min(1, progress_ratio))  # Clamp to [0, 1]
+                eta_hours = total_duration_hours * progress_ratio
+                eta_utc = departure_time + timedelta(hours=eta_hours)
+                
+                station["distance_from_origin_km"] = round(dist_from_origin, 1)
+                station["eta_utc"] = eta_utc.isoformat()  # Store as ISO string for JSON serialization
+                logger.info(f"  Station {st_id} ({station['station_name']}): {dist_from_origin:.1f}km from origin, ETA {eta_utc.strftime('%Y-%m-%d %H:%M UTC')}")
+            else:
+                station["distance_from_origin_km"] = 0
+                station["eta_utc"] = departure_time.isoformat()
+        
+        return matched_stations
+
+    def match_forecasts_to_etas(
+        self, 
+        forecast_df: pd.DataFrame, 
+        matched_stations: List[Dict[str, Any]]
+    ) -> pd.DataFrame:
+        """
+        Match forecast data to each station's ETA by finding the forecast 
+        entry closest in time to the station's ETA.
+        
+        Returns a DataFrame with one row per station containing forecast
+        data for the time closest to ETA.
+        """
+        if forecast_df.empty or not matched_stations:
+            return pd.DataFrame()
+        
+        matched_forecasts = []
+        
+        for station in matched_stations:
+            st_id = station["station_id"]
+            eta_str = station.get("eta_utc")
+            
+            if eta_str is None:
+                continue
+            
+            # Parse eta string to datetime for comparison
+            try:
+                eta = pd.Timestamp(eta_str)
+            except Exception:
+                logger.warning(f"⚠️ Could not parse ETA for station {st_id}: {eta_str}")
+                continue
+            
+            # Filter forecasts for this station
+            station_forecasts = forecast_df[forecast_df["station_id"] == st_id].copy()
+            
+            if station_forecasts.empty:
+                logger.warning(f"⚠️ No forecasts for station {st_id} ({station['station_name']})")
+                continue
+            
+            # Find forecast closest to ETA
+            station_forecasts["time_diff"] = (station_forecasts["forecast_valid_time_utc"] - eta).abs()
+            closest = station_forecasts.loc[station_forecasts["time_diff"].idxmin()]
+            
+            # Build result with station info + forecast at ETA
+            result = {
+                "station_id": st_id,
+                "station_name": station["station_name"],
+                "distance_from_origin_km": station.get("distance_from_origin_km", 0),
+                "eta_utc": eta_str,  # Keep as ISO string for JSON serialization
+                "forecast_valid_time_utc": closest.get("forecast_valid_time_utc"),
+                "time_diff_hours": round(closest["time_diff"].total_seconds() / 3600, 2),
+            }
+            
+            # Add all forecast fields
+            for col in closest.index:
+                if col.startswith("forecast_") and col not in result:
+                    result[col] = closest[col]
+            
+            matched_forecasts.append(result)
+        
+        if not matched_forecasts:
+            return pd.DataFrame()
+        
+        return pd.DataFrame(matched_forecasts)
+
     def get_route_weather_pipeline(self, directions_data: Dict[str, Any], max_distance_km: float = 30.0) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
         """
         Full end-to-end pipeline:
@@ -270,3 +422,38 @@ class VedurRouteWeatherMapper:
         df_weather = self.fetch_weather_for_stations(station_ids)
 
         return matched_stations, df_weather
+
+    def get_route_weather_pipeline_with_forecast(self, directions_data: Dict[str, Any], max_distance_km: float = 30.0) -> Tuple[List[Dict[str, Any]], pd.DataFrame, pd.DataFrame]:
+        """
+        Full end-to-end pipeline with forecasts:
+        1. Fetch active Vedur stations
+        2. Map Google route sample points to nearest station IDs
+        3. Calculate ETAs at each station
+        4. Fetch live weather observations for matched stations
+        5. Fetch forecasts for matched stations
+        6. Match forecasts to ETAs
+        
+        Returns:
+            matched_stations: List with ETA info
+            df_weather: Live observations DataFrame
+            df_forecast: Forecast at ETA DataFrame
+        """
+        self.fetch_active_stations()
+        matched_stations = self.map_route_to_station_ids(directions_data, max_distance_km=max_distance_km)
+        station_ids = [m["station_id"] for m in matched_stations]
+        
+        logger.info(f"Matched route to {len(station_ids)} weather stations: {station_ids}")
+        
+        # Calculate ETAs
+        matched_stations = self.calculate_station_etas(directions_data, matched_stations)
+        
+        # Fetch live observations
+        df_weather = self.fetch_weather_for_stations(station_ids)
+        
+        # Fetch forecasts
+        df_forecast_all = self.fetch_forecast_for_stations(station_ids)
+        
+        # Match forecasts to ETAs
+        df_forecast_at_eta = self.match_forecasts_to_etas(df_forecast_all, matched_stations)
+        
+        return matched_stations, df_weather, df_forecast_at_eta
