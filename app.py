@@ -538,8 +538,8 @@ with st.spinner("📡 Loading route data (live weather + fuel prices)..."):
 df_wx["route_order"] = df_wx["station_name"].map(route_order)
 df_wx = df_wx.sort_values("route_order", na_position="last").drop(columns=["route_order"]).reset_index(drop=True)
 
-df_fuel["route_order"] = df_fuel["station_name"].map(route_order)
-df_fuel = df_fuel.sort_values("route_order", na_position="last").drop(columns=["route_order"]).reset_index(drop=True)
+# Sort fuel stations by distance from route (nearest first)
+df_fuel = df_fuel.sort_values("distance_km", ascending=True).reset_index(drop=True)
 
 # ---- Create display-ready copies (with unit conversions) -----------
 df_wx_display = df_wx.copy()
