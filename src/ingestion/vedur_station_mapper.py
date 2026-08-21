@@ -136,6 +136,7 @@ class VedurRouteWeatherMapper:
         """
         Extract sample coordinates along a Google Directions route.
         Includes origin, destination, step endpoints, and 15km sampled polyline points.
+        Returns points sorted by distance from origin.
         """
         sample_points = []
         
@@ -150,10 +151,12 @@ class VedurRouteWeatherMapper:
             sample_points.append({
                 "label": f"Origin: {legs[0].get('start_address', 'Start')}",
                 "lat": start_loc["lat"],
-                "lng": start_loc["lng"]
+                "lng": start_loc["lng"],
+                "distance_from_origin_km": 0.0
             })
 
-        # Process each leg & steps
+        # Process each leg & steps - track cumulative distance
+        cumulative_dist_km = 0.0
         for leg_idx, leg in enumerate(legs):
             steps_data = leg.get("steps", [])
             if isinstance(steps_data, list):
@@ -161,10 +164,13 @@ class VedurRouteWeatherMapper:
                     if isinstance(step, dict) and "end_location" in step:
                         end_loc = step["end_location"]
                         if isinstance(end_loc, dict) and "lat" in end_loc and "lng" in end_loc:
+                            step_dist = step.get("distance", {}).get("value", 0) / 1000.0  # meters to km
+                            cumulative_dist_km += step_dist
                             sample_points.append({
                                 "label": f"Leg {leg_idx + 1} Step {step_idx + 1}",
                                 "lat": end_loc["lat"],
-                                "lng": end_loc["lng"]
+                                "lng": end_loc["lng"],
+                                "distance_from_origin_km": round(cumulative_dist_km, 2)
                             })
 
         # Destination
@@ -173,7 +179,8 @@ class VedurRouteWeatherMapper:
             sample_points.append({
                 "label": f"Destination: {legs[-1].get('end_address', 'End')}",
                 "lat": end_loc["lat"],
-                "lng": end_loc["lng"]
+                "lng": end_loc["lng"],
+                "distance_from_origin_km": round(cumulative_dist_km, 2)
             })
 
         # Polyline spatial sampling at 15km intervals along road
@@ -191,11 +198,15 @@ class VedurRouteWeatherMapper:
                         sample_points.append({
                             "label": f"Polyline Sample (~{accumulated_dist:.1f}km)",
                             "lat": pt[0],
-                            "lng": pt[1]
+                            "lng": pt[1],
+                            "distance_from_origin_km": round(accumulated_dist, 2)
                         })
                         accumulated_dist = 0.0
                     last_pt = pt
 
+        # Sort all sample points by distance from origin to ensure correct route order
+        sample_points.sort(key=lambda p: p.get("distance_from_origin_km", 0.0))
+        
         return sample_points
 
     def map_route_to_station_ids(self, directions_data: Dict[str, Any], max_distance_km: float = 30.0, sample_interval_km: float = 15.0) -> List[Dict[str, Any]]:
@@ -220,7 +231,8 @@ class VedurRouteWeatherMapper:
                         "station_lon": st.get("lon"),
                         "station_type": st.get("type"),
                         "distance_from_route_pt_km": round(dist, 2),
-                        "matched_route_label": pt["label"]
+                        "matched_route_label": pt["label"],
+                        "distance_from_origin_km": pt.get("distance_from_origin_km", 0.0)
                     })
 
         return matched_stations
@@ -310,23 +322,10 @@ class VedurRouteWeatherMapper:
             logger.warning("Route has zero distance/duration, cannot calculate ETAs")
             return matched_stations
         
-        # Extract route sample points with accumulated distance
-        route_sample_points = self.extract_route_sample_points(directions_data, sample_interval_km=15.0)
-        
-        # Build cumulative distance map for each station's matched route point
-        station_distances = {}
-        for station in matched_stations:
-            label = station.get("matched_route_label", "")
-            # Find the sample point with matching label
-            for pt in route_sample_points:
-                if pt["label"] == label:
-                    station_distances[station["station_id"]] = pt.get("accumulated_km", 0)
-                    break
-        
-        # Calculate ETA for each station
+        # Calculate ETA for each station using pre-computed distance_from_origin_km from matched_stations
         for station in matched_stations:
             st_id = station["station_id"]
-            dist_from_origin = station_distances.get(st_id, 0)
+            dist_from_origin = station.get("distance_from_origin_km", 0)
             
             if total_distance_km > 0:
                 progress_ratio = dist_from_origin / total_distance_km

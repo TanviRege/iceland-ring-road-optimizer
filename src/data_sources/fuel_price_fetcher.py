@@ -224,14 +224,27 @@ def find_closest_station(
 def get_fuel_price_at_route(
     waypoints: List[Tuple[float, float]],
     fuel_type: str = 'bensin95',
-    max_distance_km: float = 30.0
+    max_distance_km: float = 30.0,
+    waypoint_distances: Optional[List[float]] = None
 ) -> List[Dict]:
-    """Find fuel stations near a route defined by waypoints."""
+    """
+    Find fuel stations near a route defined by waypoints.
+    
+    Args:
+        waypoints: List of (lat, lng) tuples along the route
+        fuel_type: Type of fuel to query (e.g., 'bensin95', 'diesel')
+        max_distance_km: Maximum distance from waypoints to search for stations
+        waypoint_distances: Optional list of cumulative route distances (km) for each waypoint.
+                           If provided, fuel stations will be ordered by route distance.
+    """
     all_stations = []
     seen_keys = set()
     
-    for waypoint in waypoints:
+    for i, waypoint in enumerate(waypoints):
         lat, lon = waypoint
+        # Get the route distance for this waypoint if available
+        route_distance_km = waypoint_distances[i] if waypoint_distances and i < len(waypoint_distances) else None
+        
         stations = get_fetcher().get_nearest_stations(lat, lon, max_distance_km, limit=5)
         
         for station in stations:
@@ -261,11 +274,17 @@ def get_fuel_price_at_route(
                     'lon': station.get('geo', {}).get('lon'),
                     'key': key,
                     'near_waypoint_lat': lat,
-                    'near_waypoint_lon': lon
+                    'near_waypoint_lon': lon,
+                    'route_distance_km': route_distance_km  # Distance along route from origin
                 }
                 all_stations.append(route_station)
     
-    all_stations.sort(key=lambda x: x.get('price', float('inf')) if x.get('price') else float('inf'))
+    # Sort by route distance if available, otherwise fall back to price sorting
+    if waypoint_distances:
+        all_stations.sort(key=lambda x: x.get('route_distance_km', float('inf')) if x.get('route_distance_km') is not None else float('inf'))
+    else:
+        all_stations.sort(key=lambda x: x.get('price', float('inf')) if x.get('price') else float('inf'))
+    
     return all_stations
 
 

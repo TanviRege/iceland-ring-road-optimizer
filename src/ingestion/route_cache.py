@@ -45,6 +45,7 @@ def _get_cache_paths(route_key: str) -> Tuple[Path, Path, Path, Path]:
 
 
 def _directions_to_waypoints(directions: Dict) -> List[Tuple[float, float]]:
+    """Extract waypoints as (lat, lng) tuples from Google Directions response."""
     waypoints = []
     for leg in directions.get("legs", []):
         for step in leg.get("steps", []):
@@ -56,6 +57,32 @@ def _directions_to_waypoints(directions: Dict) -> List[Tuple[float, float]]:
         end_loc = last_leg.get("end_location")
         if end_loc:
             waypoints.append((end_loc["lat"], end_loc["lng"]))
+    return waypoints
+
+
+def _directions_to_waypoints_with_distance(directions: Dict) -> List[Tuple[float, float, float]]:
+    """
+    Extract waypoints with cumulative route distance from origin.
+    Returns list of (lat, lng, distance_from_origin_km) tuples.
+    """
+    waypoints = []
+    cumulative_distance_km = 0.0
+    
+    for leg in directions.get("legs", []):
+        for step in leg.get("steps", []):
+            loc = step.get("start_location")
+            if loc:
+                waypoints.append((loc["lat"], loc["lng"], cumulative_distance_km))
+            # Add step distance to cumulative
+            step_dist = step.get("distance", {}).get("value", 0)  # in meters
+            cumulative_distance_km += step_dist / 1000.0
+    
+    if directions.get("legs"):
+        last_leg = directions["legs"][-1]
+        end_loc = last_leg.get("end_location")
+        if end_loc:
+            waypoints.append((end_loc["lat"], end_loc["lng"], cumulative_distance_km))
+    
     return waypoints
 
 
@@ -223,8 +250,9 @@ def _create_fuel_stations_df(fuel_stations: List[Dict], directions: Dict = None)
         base_price = fs.get("price") or fs.get("regular_price")
         discount_price = fs.get("discount_price")
         
-        # Calculate distance from origin if directions provided
-        distance_from_origin_km = fs.get("distance_from_origin_km", 0.0)
+        # Use route distance if available (from get_fuel_price_at_route with waypoint_distances)
+        # Fall back to straight-line distance calculation if not
+        distance_from_origin_km = fs.get("route_distance_km", 0.0)
         if distance_from_origin_km == 0.0 and directions:
             # Try to calculate from near_waypoint coordinates
             near_lat = fs.get("near_waypoint_lat")
@@ -316,8 +344,10 @@ def get_route_data(
     
     if fuel_df.empty:
         print(f"Fetching live fuel data: {route_key}")
-        route_waypoints = _directions_to_waypoints(directions)
-        fuel_stations = get_fuel_price_at_route(route_waypoints, max_distance_km=30.0)
+        route_waypoints_with_dist = _directions_to_waypoints_with_distance(directions)
+        route_waypoints = [(lat, lng) for lat, lng, _ in route_waypoints_with_dist]
+        waypoint_distances = [dist for _, _, dist in route_waypoints_with_dist]
+        fuel_stations = get_fuel_price_at_route(route_waypoints, max_distance_km=30.0, waypoint_distances=waypoint_distances)
         fuel_df = _create_fuel_stations_df(fuel_stations, directions)
         if not fuel_df.empty:
             fuel_df.to_parquet(fuel_path, index=False)
