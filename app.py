@@ -44,7 +44,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-from src.interface.directions import get_directions
+from src.interface.directions import get_directions, geocode_place
 from src.interface.maps_url_interface import (
     DEFAULT_MAPS_URL,
     acquire_google_maps_url,
@@ -378,7 +378,7 @@ try:
     if points:
         pts = pd.DataFrame(points)
         
-        # Build marker data: origin, waypoints, destination
+        # Build marker data: origin, destination (waypoints handled separately from user_waypoints)
         marker_data = []
         # Origin
         marker_data.append({
@@ -387,14 +387,6 @@ try:
             "name": route_info["origin"],
             "type": "origin"
         })
-        # Waypoints (intermediate stops)
-        for i, leg in enumerate(directions["legs"][:-1]):
-            marker_data.append({
-                "lat": leg["end_location"]["lat"],
-                "lon": leg["end_location"]["lng"],
-                "name": leg["end_address"],
-                "type": "waypoint"
-            })
         # Destination
         last_leg = directions["legs"][-1]
         marker_data.append({
@@ -414,56 +406,59 @@ try:
         # Hide legend for the route line
         fig.data[0].update(showlegend=False, name="Route", hoverinfo="skip")
         
-        # Add origin marker (green)
+        # Add origin marker (green) - use go.Scattermapbox directly to avoid duplicate legend entries
         origin_m = markers[markers["type"] == "origin"]
         if not origin_m.empty:
-            fig.add_trace(px.scatter_mapbox(
-                origin_m, lat="lat", lon="lon", 
-                hover_name="name",
-                color_discrete_sequence=["#22c55e"],
-                size_max=16,
-                zoom=6,
-            ).data[0])
-            fig.data[-1].update(
+            fig.add_trace(go.Scattermapbox(
+                lat=origin_m["lat"],
+                lon=origin_m["lon"],
+                mode="markers",
                 marker=dict(size=16, color="#22c55e", symbol="circle"),
                 name="🟢 Origin",
                 showlegend=True,
+                hovertext=origin_m["name"],
                 hovertemplate="<b>%{hovertext}</b><br>Origin<extra></extra>",
-            )
+            ))
         
-        # Add waypoint markers (blue)
-        wp_m = markers[markers["type"] == "waypoint"]
-        if not wp_m.empty:
-            fig.add_trace(px.scatter_mapbox(
-                wp_m, lat="lat", lon="lon",
-                hover_name="name",
-                color_discrete_sequence=["#3b82f6"],
-                size_max=14,
-                zoom=6,
-            ).data[0])
-            fig.data[-1].update(
-                marker=dict(size=14, color="#3b82f6", symbol="circle"),
-                name="🔵 Waypoint",
-                showlegend=True,
-                hovertemplate="<b>%{hovertext}</b><br>Waypoint<extra></extra>",
-            )
+        # Add waypoint markers (blue) - use go.Scattermapbox directly
+        # Use user_waypoints from session state (original waypoints from Google Maps URL)
+        # because Directions API with "via:" waypoints doesn't create separate legs
+        user_waypoints = st.session_state.get("user_waypoints", [])
+        if user_waypoints:
+            # Geocode waypoints to get lat/lon for map display
+            wp_coords = []
+            for wp in user_waypoints:
+                # Try to find in route_info raw_places or geocode
+                geo = geocode_place(wp)
+                if geo:
+                    wp_coords.append({"lat": geo["lat"], "lon": geo["lng"], "name": geo["formatted_address"]})
+            
+            if wp_coords:
+                wp_df = pd.DataFrame(wp_coords)
+                fig.add_trace(go.Scattermapbox(
+                    lat=wp_df["lat"],
+                    lon=wp_df["lon"],
+                    mode="markers",
+                    marker=dict(size=14, color="#3b82f6", symbol="circle"),
+                    name="🔵 Waypoint",
+                    showlegend=True,
+                    hovertext=wp_df["name"],
+                    hovertemplate="<b>%{hovertext}</b><br>Waypoint<extra></extra>",
+                ))
         
-        # Add destination marker (red)
+        # Add destination marker (red) - use go.Scattermapbox directly
         dest_m = markers[markers["type"] == "destination"]
         if not dest_m.empty:
-            fig.add_trace(px.scatter_mapbox(
-                dest_m, lat="lat", lon="lon",
-                hover_name="name",
-                color_discrete_sequence=["#ef4444"],
-                size_max=16,
-                zoom=6,
-            ).data[0])
-            fig.data[-1].update(
+            fig.add_trace(go.Scattermapbox(
+                lat=dest_m["lat"],
+                lon=dest_m["lon"],
+                mode="markers",
                 marker=dict(size=16, color="#ef4444", symbol="circle"),
                 name="🔴 Destination",
                 showlegend=True,
+                hovertext=dest_m["name"],
                 hovertemplate="<b>%{hovertext}</b><br>Destination<extra></extra>",
-            )
+            ))
         
         # Add "Iceland" label at center of country
         iceland_label = pd.DataFrame({
