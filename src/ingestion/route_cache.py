@@ -141,7 +141,7 @@ def _create_telemetry_from_live_data(
         route_pos = route_order.get(station_name, i)
         record = {
             "waypoint_id": route_pos + 1,
-            "stop_name": station.get("matched_route_label", station_name),
+            "stop_name": station_name,
             "region": station.get("station_type", ""),
             "latitude": lat,
             "longitude": lon,
@@ -171,7 +171,7 @@ def _create_telemetry_from_live_data(
             "station_id": weather_row.get("station_id") if weather_row is not None else station.get("station_id"),
             "station_name": station_name,
             "observation_time_utc": weather_row.get("observation_time_utc") if weather_row is not None else pd.Timestamp.now().isoformat(),
-            "matched_point": station.get("matched_route_label", ""),
+            "matched_point": station_name,
             "distance_km": distance_km,
         }
         records.append(record)

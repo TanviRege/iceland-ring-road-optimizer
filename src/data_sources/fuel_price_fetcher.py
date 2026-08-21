@@ -149,9 +149,15 @@ class FuelPriceFetcher:
         for station in stations:
             price = get_price(station)
             if price is not None:
+                raw_name = station.get('name', '')
+                company = station.get('company', '')
+                if company and raw_name and company.lower() not in raw_name.lower():
+                    precise_name = f"{company} {raw_name}"
+                else:
+                    precise_name = raw_name
                 priced_stations.append({
-                    'station_name': station.get('name'),
-                    'company': station.get('company'),
+                    'station_name': precise_name,
+                    'company': company,
                     'fuel_type': fuel_type,
                     'price': price,
                     'discount_price': station.get(f"{fuel_type}_discount") if include_discount else None,
@@ -194,9 +200,15 @@ def find_closest_station(
     nearby = get_fetcher().get_nearest_stations(lat, lon, max_distance_km=10.0, limit=1)
     if nearby:
         station = nearby[0]
+        raw_name = station.get('name', '')
+        company = station.get('company', '')
+        if company and raw_name and company.lower() not in raw_name.lower():
+            precise_name = f"{company} {raw_name}"
+        else:
+            precise_name = raw_name
         return {
-            'station_name': station.get('name'),
-            'company': station.get('company'),
+            'station_name': precise_name,
+            'company': company,
             'bensin95': station.get('bensin95'),
             'bensin95_discount': station.get('bensin95_discount'),
             'diesel': station.get('diesel'),
@@ -230,9 +242,17 @@ def get_fuel_price_at_route(
                 discount_price = station.get(f"{fuel_type}_discount")
                 effective_price = discount_price if discount_price and discount_price > 0 else base_price
                 
+                # Create more precise station name by combining company + name
+                raw_name = station.get('name', '')
+                company = station.get('company', '')
+                if company and raw_name and company.lower() not in raw_name.lower():
+                    precise_name = f"{company} {raw_name}"
+                else:
+                    precise_name = raw_name
+                
                 route_station = {
-                    'station_name': station.get('name'),
-                    'company': station.get('company'),
+                    'station_name': precise_name,
+                    'company': company,
                     'price': effective_price,
                     'regular_price': base_price,
                     'discount_price': discount_price,
