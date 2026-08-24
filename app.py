@@ -498,15 +498,18 @@ if cached_routes:
         else "N/A"
     )
 
-    # Risk classification
-    if max_gust >= 18:
-        risk_label, risk_desc = "🔴 CRITICAL", "Rollover risk"
-    elif max_gust >= 15:
-        risk_label, risk_desc = "🟠 HIGH", "Strong crosswinds"
+    # Risk classification tuned for Renault Trafic 3 / medium panel van camper (~2.5m height, ~2.5-3t)
+    # Based on Icelandic rental company guidance & Vegagerðin high-sided vehicle advice
+    if max_gust >= 25:
+        risk_label, risk_desc = "🔴 CRITICAL", "DO NOT DRIVE - Park safely immediately"
+    elif max_gust >= 22:
+        risk_label, risk_desc = "🔴 SEVERE", "High risk - Seek shelter, avoid exposed areas"
+    elif max_gust >= 18:
+        risk_label, risk_desc = "🟠 HIGH", "High caution - Consider stopping, crosswind danger"
     elif max_gust >= 12:
-        risk_label, risk_desc = "🟡 MODERATE", "Caution advised"
+        risk_label, risk_desc = "🟡 MODERATE", "Caution - Reduce speed, firm grip on wheel"
     elif max_gust >= 8:
-        risk_label, risk_desc = "🟢 LOW", "Moderate winds"
+        risk_label, risk_desc = "🟢 LOW", "Normal driving - Be aware of gusts"
     else:
         risk_label, risk_desc = "✅ CLEAR", "Safe conditions"
 
@@ -530,8 +533,9 @@ if cached_routes:
     # ==================================================================
     st.markdown("### 🛣️ Road Safety Heatmap")
     st.caption(
-        "Each cell is a normalized 0 → 1 risk score. "
-        "Green = safe · Yellow = caution · Red = danger."
+        "Each cell is a normalized 0 → 1 risk score based on official Icelandic thresholds. "
+        "Green = safe · Yellow = caution · Red = danger. "
+        "Wind: Vedur.is warnings | Temp: Black ice risk | Surface: Ice formation | Humidity: Fog/ice combo"
     )
 
     def _norm(series: pd.Series, lo: float, hi: float) -> pd.Series:
@@ -540,25 +544,70 @@ if cached_routes:
 
     hm = pd.DataFrame({"Station": df_wx["station_name"].values})
 
-    # Wind gust risk  (0 m/s = safe, 18 m/s = critical)
-    hm["Wind Gust"] = _norm(df_wx["wind_gust_max_ms"].fillna(0), 0, 18).values
+    # Wind gust risk for Renault Trafic 3 / medium panel van camper
+    # 0-8 m/s = safe (0), 8-12 m/s = low (0→0.2), 12-18 m/s = moderate (0.2→0.5)
+    # 18-22 m/s = high (0.5→0.75), 22-25 m/s = severe (0.75→0.9), 25+ m/s = critical (0.9→1.0)
+    def _wind_gust_risk(gust_ms):
+        """Piecewise normalization for medium panel van camper (Renault Trafic 3 class)."""
+        g = gust_ms.fillna(0)
+        return (
+            (g.clip(upper=8) * 0.0)                    # 0-8: 0 risk
+            + ((g.clip(8, 12) - 8) / 4 * 0.2)         # 8-12: 0→0.2
+            + ((g.clip(12, 18) - 12) / 6 * 0.3)       # 12-18: 0.2→0.5
+            + ((g.clip(18, 22) - 18) / 4 * 0.25)      # 18-22: 0.5→0.75
+            + ((g.clip(22, 25) - 22) / 3 * 0.15)      # 22-25: 0.75→0.9
+            + ((g - 25).clip(lower=0) / 10 * 0.1).clip(upper=0.1)  # 25+: 0.9→1.0
+        ).clip(0, 1)
 
-    # Cold risk  (15 °C+ = safe → 0, 0 °C = dangerous → 1)
-    hm["Cold Risk"] = (
-        1 - _norm(df_wx["air_temp_c"].fillna(5), 0, 15)
-    ).values
+    hm["Wind Gust"] = _wind_gust_risk(df_wx["wind_gust_max_ms"]).values
 
-    # Road surface risk
+    # Cold / Black ice risk: real danger zone is 5°C → 0°C and below
+    # Above 5°C = safe (0), 5→0°C = rising risk (0→0.7), below 0°C = severe (0.7→1.0)
+    def _cold_risk(temp_c):
+        t = temp_c.fillna(5)
+        # Above 5°C: no risk
+        # 5°C to 0°C: 0 to 0.7 (black ice risk increases)
+        # Below 0°C: 0.7 to 1.0 (ice certain)
+        risk = pd.Series(0.0, index=t.index)
+        risk = risk.where(t > 5, 0.0)  # Above 5°C = 0
+        # 5°C down to 0°C
+        mask_5_0 = (t <= 5) & (t >= 0)
+        risk = risk.where(~mask_5_0, (5 - t[mask_5_0]) / 5 * 0.7)
+        # Below 0°C
+        mask_below_0 = t < 0
+        risk = risk.where(~mask_below_0, 0.7 + (-t[mask_below_0] / 15 * 0.3).clip(upper=0.3))
+        return risk.clip(0, 1)
+
+    hm["Cold Risk"] = _cold_risk(df_wx["air_temp_c"]).values
+
+    # Road surface temperature risk: ice forms at/below 0°C, risk rises 3°C→0°C
     if df_wx["road_surface_temp_c"].notna().any():
-        hm["Road Surface"] = (
-            1 - _norm(df_wx["road_surface_temp_c"].fillna(5), 0, 20)
-        ).values
+        def _road_surface_risk(surf_temp_c):
+            t = surf_temp_c.fillna(5)
+            risk = pd.Series(0.0, index=t.index)
+            risk = risk.where(t > 3, 0.0)  # Above 3°C = safe
+            mask_3_0 = (t <= 3) & (t >= 0)
+            risk = risk.where(~mask_3_0, (3 - t[mask_3_0]) / 3 * 0.7)  # 3→0°C = 0→0.7
+            mask_below_0 = t < 0
+            risk = risk.where(~mask_below_0, 0.7 + (-t[mask_below_0] / 10 * 0.3).clip(upper=0.3))
+            return risk.clip(0, 1)
 
-    # Humidity risk  (50 % = fine, 100 % = fog/ice)
+        hm["Road Surface"] = _road_surface_risk(df_wx["road_surface_temp_c"]).values
+
+    # Humidity risk: only dangerous at high humidity (>90%) combined with low temps
+    # Below 80% = low risk, 80-95% = rising, 95%+ = high (fog/ice formation)
     if df_wx["relative_humidity_pct"].notna().any():
-        hm["Humidity"] = _norm(
-            df_wx["relative_humidity_pct"].fillna(50), 50, 100
-        ).values
+        def _humidity_risk(humidity_pct):
+            h = humidity_pct.fillna(50)
+            risk = pd.Series(0.0, index=h.index)
+            risk = risk.where(h < 80, 0.0)  # Below 80% = minimal risk
+            mask_80_95 = (h >= 80) & (h <= 95)
+            risk = risk.where(~mask_80_95, (h[mask_80_95] - 80) / 15 * 0.6)  # 80-95% = 0→0.6
+            mask_above_95 = h > 95
+            risk = risk.where(~mask_above_95, 0.6 + (h[mask_above_95] - 95) / 5 * 0.4)  # 95-100% = 0.6→1.0
+            return risk.clip(0, 1)
+
+        hm["Humidity"] = _humidity_risk(df_wx["relative_humidity_pct"]).values
 
     # Road status → numeric
     status_map = {
