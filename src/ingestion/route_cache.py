@@ -318,6 +318,8 @@ def get_route_data(
         matched_stations = structure["matched_stations"]
         route_order = structure["route_order"]
     
+# Initialize forecast_df to empty (will be populated if fresh structure fetched)
+    forecast_df = pd.DataFrame()
     weather_df = pd.DataFrame()
     if not force_refresh and _is_cache_valid(metadata_path, WEATHER_TTL) and weather_path.exists():
         try:
@@ -329,10 +331,18 @@ def get_route_data(
     if weather_df.empty:
         print(f"Fetching live weather data: {route_key}")
         mapper = VedurRouteWeatherMapper()
-        _, weather_df = mapper.get_route_weather_pipeline(directions)
+        # Also fetch forecasts (they change frequently, so always get fresh)
+        matched_stations_with_eta, weather_df, forecast_df = mapper.get_route_weather_pipeline_with_forecast(directions)
         if not weather_df.empty:
             weather_df.to_parquet(weather_path, index=False)
             _save_metadata(metadata_path, "weather")
+        # Update matched_stations with ETAs from fresh forecast call
+        structure["matched_stations"] = matched_stations_with_eta
+    else:
+        # Weather data is cached, but we still need fresh forecasts for current ETAs
+        print(f"Fetching fresh forecasts: {route_key}")
+        mapper = VedurRouteWeatherMapper()
+        _, _, forecast_df = mapper.get_route_weather_pipeline_with_forecast(directions)
     
     fuel_df = pd.DataFrame()
     if not force_refresh and _is_cache_valid(metadata_path, FUEL_TTL) and fuel_path.exists():

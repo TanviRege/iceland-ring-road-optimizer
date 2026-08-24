@@ -10,13 +10,20 @@ import math
 import logging
 import requests
 import pandas as pd
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-VEDUR_BASE_URL = "https://api.vedur.is/weather"
+# JSON endpoint for stations list (this one works)
+VEDUR_STATIONS_URL = "https://api.vedur.is/weather/stations"
+
+# XML endpoints for observations and forecasts (these are the working ones)
+VEDUR_XML_BASE_URL = "https://xmlweather.vedur.is/"
+VEDUR_OBS_PARAMS = {"op_w": "xml", "type": "obs", "lang": "is", "view": "xml"}
+VEDUR_FOREC_PARAMS = {"op_w": "xml", "type": "forec", "lang": "is", "view": "xml"}
 
 # Column map for Vedur observations
 VEDUR_COLUMN_MAP = {
@@ -60,6 +67,32 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * c
 
 
+# Icelandic wind direction abbreviations to degrees and cardinal names
+_WIND_DIR_MAP = {
+    "N": 0, "NNA": 22.5, "NA": 45, "ANA": 67.5,
+    "A": 90, "ASA": 112.5, "SA": 135, "SSA": 157.5,
+    "S": 180, "SSV": 202.5, "SV": 225, "VSV": 247.5,
+    "V": 270, "VNV": 292.5, "NV": 315, "NNV": 337.5,
+}
+
+_CARDINAL_NAMES = [
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"
+]
+
+def _wind_dir_to_degrees(dir_str: str) -> Optional[float]:
+    """Convert Icelandic wind direction abbreviation to degrees."""
+    return _WIND_DIR_MAP.get(dir_str.upper().strip())
+
+def _wind_dir_to_cardinal(dir_str: str) -> str:
+    """Convert Icelandic wind direction abbreviation to cardinal name."""
+    deg = _wind_dir_to_degrees(dir_str)
+    if deg is None:
+        return dir_str
+    idx = int((deg + 11.25) / 22.5) % 16
+    return _CARDINAL_NAMES[idx]
+
+
 def decode_polyline(polyline_str: str) -> List[Tuple[float, float]]:
     """Decode Google Maps encoded polyline into list of (lat, lng) tuples."""
     index, lat, lng = 0, 0, 0
@@ -95,7 +128,7 @@ class VedurRouteWeatherMapper:
 
     def fetch_active_stations(self, station_types: List[str] = ["sj", "sk"]) -> List[Dict[str, Any]]:
         """Fetch list of all active weather stations from Vedur API."""
-        url = f"{VEDUR_BASE_URL}/stations"
+        url = VEDUR_STATIONS_URL
         params = {"active": "true"}
         
         try:
@@ -237,25 +270,98 @@ class VedurRouteWeatherMapper:
 
         return matched_stations
 
+    def _parse_observation_xml(self, xml_text: str, station_id: int) -> Optional[Dict[str, Any]]:
+        """Parse observation XML from xmlweather.vedur.is into a dict matching VEDUR_COLUMN_MAP."""
+        try:
+            root = ET.fromstring(xml_text)
+            station_elem = root.find("station")
+            if station_elem is None:
+                return None
+            
+            obs = {"station_id": station_id}
+            
+            name_elem = station_elem.find("name")
+            if name_elem is not None and name_elem.text:
+                obs["name"] = name_elem.text
+            
+            time_elem = station_elem.find("time")
+            if time_elem is not None and time_elem.text:
+                obs["time"] = time_elem.text
+            
+            f_elem = station_elem.find("F")
+            if f_elem is not None and f_elem.text:
+                try:
+                    obs["f"] = float(f_elem.text)
+                except ValueError:
+                    pass
+            
+            d_elem = station_elem.find("D")
+            if d_elem is not None and d_elem.text:
+                obs["d"] = d_elem.text
+            
+            fx_elem = station_elem.find("FX")
+            if fx_elem is not None and fx_elem.text:
+                try:
+                    obs["fx"] = float(fx_elem.text)
+                except ValueError:
+                    pass
+            
+            fg_elem = station_elem.find("FG")
+            if fg_elem is not None and fg_elem.text:
+                try:
+                    obs["fg"] = float(fg_elem.text)
+                except ValueError:
+                    pass
+            
+            t_elem = station_elem.find("T")
+            if t_elem is not None and t_elem.text:
+                try:
+                    obs["t"] = float(t_elem.text.replace(",", "."))
+                except ValueError:
+                    pass
+            
+            w_elem = station_elem.find("W")
+            if w_elem is not None and w_elem.text:
+                obs["w"] = w_elem.text
+            
+            v_elem = station_elem.find("V")
+            if v_elem is not None and v_elem.text:
+                try:
+                    obs["v"] = float(v_elem.text.replace(",", "."))
+                except ValueError:
+                    pass
+            
+            r_elem = station_elem.find("R")
+            if r_elem is not None and r_elem.text:
+                try:
+                    obs["r"] = float(r_elem.text.replace(",", "."))
+                except ValueError:
+                    pass
+            
+            return obs
+        except ET.ParseError as e:
+            logger.error(f"❌ Failed to parse observation XML for station {station_id}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error parsing observation for station {station_id}: {e}")
+            return None
+
     def fetch_weather_for_stations(self, station_ids: List[int]) -> pd.DataFrame:
         """
-        Fetch latest hourly AWS weather observations from Vedur API for a list of station IDs.
+        Fetch latest hourly weather observations from Vedur XML API for a list of station IDs.
         """
-        url = f"{VEDUR_BASE_URL}/observations/aws/hour/latest"
         all_obs = []
 
         for st_id in station_ids:
-            params = {
-                "station_id": st_id,
-                "parameters": "all"
-            }
+            params = VEDUR_OBS_PARAMS.copy()
+            params["ids"] = str(st_id)
             try:
-                r = requests.get(url, params=params, timeout=10)
+                r = requests.get(VEDUR_XML_BASE_URL, params=params, timeout=10)
                 r.raise_for_status()
-                data = r.json()
-                if data:
-                    all_obs.extend(data)
-                    logger.info(f"✅ Fetched weather for Station {st_id} ({data[0].get('name', '')})")
+                obs = self._parse_observation_xml(r.text, st_id)
+                if obs:
+                    all_obs.append(obs)
+                    logger.info(f"✅ Fetched weather for Station {st_id} ({obs.get('name', '')})")
                 else:
                     logger.warning(f"⚠️ Station {st_id}: No data returned")
             except Exception as e:
@@ -268,24 +374,77 @@ class VedurRouteWeatherMapper:
         df_renamed = df.rename(columns=VEDUR_COLUMN_MAP)
         return df_renamed
 
+    def _parse_forecast_xml(self, xml_text: str, station_id: int) -> List[Dict[str, Any]]:
+        """Parse forecast XML from xmlweather.vedur.is into a list of dicts."""
+        forecasts = []
+        try:
+            root = ET.fromstring(xml_text)
+            station_elem = root.find("station")
+            if station_elem is None:
+                return forecasts
+            
+            station_name = None
+            name_elem = station_elem.find("name")
+            if name_elem is not None and name_elem.text:
+                station_name = name_elem.text
+            
+            for forecast_elem in station_elem.findall("forecast"):
+                fc = {"station_id": station_id, "station_name": station_name}
+                
+                ftime_elem = forecast_elem.find("ftime")
+                if ftime_elem is not None and ftime_elem.text:
+                    fc["ftime"] = ftime_elem.text
+                
+                f_elem = forecast_elem.find("F")
+                if f_elem is not None and f_elem.text:
+                    try:
+                        fc["f"] = float(f_elem.text)
+                    except ValueError:
+                        pass
+                
+                d_elem = forecast_elem.find("D")
+                if d_elem is not None and d_elem.text:
+                    fc["d"] = d_elem.text
+                    # Also convert to cardinal direction
+                    fc["d_txt"] = _wind_dir_to_cardinal(d_elem.text)
+                
+                t_elem = forecast_elem.find("T")
+                if t_elem is not None and t_elem.text:
+                    try:
+                        fc["t"] = float(t_elem.text.replace(",", "."))
+                    except ValueError:
+                        pass
+                
+                w_elem = forecast_elem.find("W")
+                if w_elem is not None and w_elem.text:
+                    fc["w"] = w_elem.text
+                
+                forecasts.append(fc)
+            
+            return forecasts
+        except ET.ParseError as e:
+            logger.error(f"❌ Failed to parse forecast XML for station {station_id}: {e}")
+            return forecasts
+        except Exception as e:
+            logger.error(f"❌ Error parsing forecast for station {station_id}: {e}")
+            return forecasts
+
     def fetch_forecast_for_stations(self, station_ids: List[int]) -> pd.DataFrame:
         """
-        Fetch weather forecasts from Vedur API for a list of station IDs.
+        Fetch weather forecasts from Vedur XML API for a list of station IDs.
         """
-        url = f"{VEDUR_BASE_URL}/forecasts/text"
         all_forecasts = []
 
         for st_id in station_ids:
-            params = {
-                "station_id": st_id,
-            }
+            params = VEDUR_FOREC_PARAMS.copy()
+            params["ids"] = str(st_id)
             try:
-                r = requests.get(url, params=params, timeout=10)
+                r = requests.get(VEDUR_XML_BASE_URL, params=params, timeout=10)
                 r.raise_for_status()
-                data = r.json()
-                if data:
-                    all_forecasts.extend(data)
-                    logger.info(f"✅ Fetched forecast for Station {st_id}")
+                forecasts = self._parse_forecast_xml(r.text, st_id)
+                if forecasts:
+                    all_forecasts.extend(forecasts)
+                    logger.info(f"✅ Fetched {len(forecasts)} forecast entries for Station {st_id}")
                 else:
                     logger.warning(f"⚠️ Station {st_id}: No forecast data returned")
             except Exception as e:
@@ -295,8 +454,27 @@ class VedurRouteWeatherMapper:
             return pd.DataFrame()
 
         df = pd.DataFrame(all_forecasts)
-        # Rename forecast columns with 'forecast_' prefix to avoid collision with observations
-        rename_map = {col: f"forecast_{col}" for col in df.columns if not col.startswith("forecast_")}
+        rename_map = {}
+        for col in df.columns:
+            if col == "ftime":
+                rename_map[col] = "forecast_valid_time_utc"
+            elif col == "f":
+                rename_map[col] = "forecast_wind_speed_ms"
+            elif col == "d":
+                rename_map[col] = "forecast_wind_dir_deg"
+            elif col == "d_txt":
+                rename_map[col] = "forecast_wind_dir_cardinal"
+            elif col == "t":
+                rename_map[col] = "forecast_temp_c"
+            elif col == "w":
+                rename_map[col] = "forecast_weather_type"
+            elif col == "station_id":
+                # Keep original station_id for matching
+                rename_map[col] = "station_id"
+            elif col == "station_name":
+                rename_map[col] = "forecast_station_name"
+            elif not col.startswith("forecast_"):
+                rename_map[col] = f"forecast_{col}"
         df_renamed = df.rename(columns=rename_map)
         return df_renamed
 
@@ -366,9 +544,9 @@ class VedurRouteWeatherMapper:
             if eta_str is None:
                 continue
             
-            # Parse eta string to datetime for comparison
+            # Parse eta string to datetime for comparison (ensure UTC timezone)
             try:
-                eta = pd.Timestamp(eta_str)
+                eta = pd.Timestamp(eta_str, tz="UTC")
             except Exception:
                 logger.warning(f"⚠️ Could not parse ETA for station {st_id}: {eta_str}")
                 continue
@@ -378,6 +556,18 @@ class VedurRouteWeatherMapper:
             
             if station_forecasts.empty:
                 logger.warning(f"⚠️ No forecasts for station {st_id} ({station['station_name']})")
+                continue
+            
+            # Convert forecast_valid_time_utc to datetime for comparison
+            # XML timestamps are in UTC (Iceland uses UTC year-round)
+            station_forecasts["forecast_valid_time_utc"] = pd.to_datetime(
+                station_forecasts["forecast_valid_time_utc"], errors="coerce", utc=True
+            )
+            # Drop any rows where conversion failed
+            station_forecasts = station_forecasts.dropna(subset=["forecast_valid_time_utc"])
+            
+            if station_forecasts.empty:
+                logger.warning(f"⚠️ No valid forecast timestamps for station {st_id}")
                 continue
             
             # Find forecast closest to ETA
