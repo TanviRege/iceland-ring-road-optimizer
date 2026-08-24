@@ -36,14 +36,7 @@ except Exception:  # pragma: no cover - dotenv is optional at import time
     pass
 
 # --- Default route (fallback only) ------------------------------------------
-SAMPLE_RING_ROAD_URL = (
-    "https://www.google.com/maps/dir/Reykjavik,+Iceland/"
-    "Skaftafell,+785+Skaftafell,+Iceland/"
-    "@63.7581615,-22.138936,7z/data=!3m1!4b1!4m14!4m13!1m5!1m1!1s0x48d674b9eedcedc3"
-    ":0xec912ca230d26071!2m2!1d-21.9407552!2d64.1469868!1m5!1m1!1s0x48d035dd195fd15b"
-    ":0x7aeae20830cc34d0!2m2!1d-16.9751755!2d64.070414!3e0?entry=ttu"
-)
-DEFAULT_MAPS_URL: str = os.environ.get("DEFAULT_MAPS_URL", SAMPLE_RING_ROAD_URL)
+DEFAULT_MAPS_URL: str = os.environ.get("DEFAULT_MAPS_URL", "")
 
 # A Google Maps directions URL always contains "/maps/dir/".
 _URL_DIR_RE = re.compile(r"/maps/dir/", re.IGNORECASE)
@@ -236,7 +229,7 @@ def acquire_google_maps_url(
 
     # -- Fallback: stdin prompt. Works in Jupyter (linear), CLI, etc. This is
     #     what a plain notebook uses. -------------------------------
-    prompt = f"{label} (press Enter to use the sample Ring Road route): "
+    prompt = f"{label} (press Enter to use default): "
     try:
         url = input(prompt).strip() or default
     except EOFError:
@@ -249,7 +242,6 @@ def acquire_google_maps_url(
 
 __all__ = [
     "DEFAULT_MAPS_URL",
-    "SAMPLE_RING_ROAD_URL",
     "detect_input_backend",
     "validate_google_maps_url",
     "parse_google_maps_url",

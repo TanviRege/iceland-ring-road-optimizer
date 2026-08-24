@@ -79,28 +79,6 @@ if "GOOGLE_MAPS_API_KEY" not in os.environ:
             "Put your `GOOGLE_MAPS_API_KEY` in `.env` (project root) or `.streamlit/secrets.toml` before fetching directions."
         )
 
-# --------------------------------------------------------------------------- #
-# Sidebar: Suggested Ring Road stops
-# --------------------------------------------------------------------------- #
-# Major towns along Iceland's Route 1 (Ring Road), clockwise from Reykjavík
-RING_ROAD_TOWNS = [
-    "Reykjavík, Iceland",
-    "Borgarnes, Iceland",
-    "Bifröst, Iceland",
-    "Laugarbakki, Iceland",
-    "Blönduós, Iceland",
-    "Varmahlíð, Iceland",
-    "Akureyri, Iceland",
-    "Goðafoss, Iceland",
-    "Mývatn, Iceland",
-    "Egilsstaðir, Iceland",
-    "Höfn, Iceland",
-    "Kirkjubæjarklaustur, Iceland",
-    "Vík í Mýrdal, Iceland",
-    "Selfoss, Iceland",
-    "Reykjavík, Iceland",  # Full loop
-]
-
 def _haversine_km(lat1, lon1, lat2, lon2):
     import math
     R = 6371.0
@@ -111,97 +89,6 @@ def _haversine_km(lat1, lon1, lat2, lon2):
          math.sin(dlon / 2.0) ** 2)
     c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
     return R * c
-
-@st.cache_data(ttl=3600)
-def _geocode_towns(towns, api_key):
-    """Batch geocode towns for distance calculations."""
-    results = {}
-    for town in towns:
-        url = "https://maps.googleapis.com/maps/api/geocode/json"
-        params = {"address": town, "key": api_key}
-        try:
-            r = requests.get(url, params=params, timeout=10)
-            data = r.json()
-            if data["status"] == "OK" and data["results"]:
-                loc = data["results"][0]["geometry"]["location"]
-                results[town] = {"lat": loc["lat"], "lng": loc["lng"]}
-        except Exception:
-            pass
-    return results
-
-def get_suggested_ring_road_stops(origin, destination, api_key):
-    """Return Ring Road towns between origin and destination in driving order."""
-    if not api_key or api_key == "your_google_maps_api_key_here":
-        return []
-    
-    # Geocode origin, destination, and all Ring Road towns
-    geo_origin = _geocode_towns([origin], api_key).get(origin)
-    geo_dest = _geocode_towns([destination], api_key).get(destination)
-    geo_towns = _geocode_towns(RING_ROAD_TOWNS, api_key)
-    
-    if not geo_origin or not geo_dest:
-        return []
-    
-    # Find closest Ring Road town to origin and destination
-    def find_closest(geo_point):
-        min_dist = float('inf')
-        closest_idx = 0
-        for i, town in enumerate(RING_ROAD_TOWNS):
-            if town in geo_towns:
-                d = _haversine_km(
-                    geo_point["lat"], geo_point["lng"],
-                    geo_towns[town]["lat"], geo_towns[town]["lng"]
-                )
-                if d < min_dist:
-                    min_dist = d
-                    closest_idx = i
-        return closest_idx
-    
-    origin_idx = find_closest(geo_origin)
-    dest_idx = find_closest(geo_dest)
-    
-    # Determine shorter direction around the ring
-    ring_len = len(RING_ROAD_TOWNS) - 1  # Exclude duplicate Reykjavík at end
-    
-    # Clockwise distance (number of towns)
-    if dest_idx >= origin_idx:
-        cw_towns = RING_ROAD_TOWNS[origin_idx + 1:dest_idx]
-    else:
-        cw_towns = RING_ROAD_TOWNS[origin_idx + 1:] + RING_ROAD_TOWNS[:dest_idx]
-    
-    # Counter-clockwise
-    if origin_idx >= dest_idx:
-        ccw_towns = RING_ROAD_TOWNS[dest_idx + 1:origin_idx]
-    else:
-        ccw_towns = RING_ROAD_TOWNS[dest_idx + 1:] + RING_ROAD_TOWNS[:origin_idx]
-    ccw_towns = list(reversed(ccw_towns))
-    
-    # Return shorter path
-    return cw_towns if len(cw_towns) <= len(ccw_towns) else ccw_towns
-
-# Show suggested stops if we have a parsed route
-if "route_info" in st.session_state and st.session_state.route_info:
-    route_info = st.session_state.route_info
-    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
-    if api_key and api_key != "your_google_maps_api_key_here":
-        suggested = get_suggested_ring_road_stops(
-            route_info["origin"], route_info["destination"], api_key
-        )
-        if suggested:
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("🗺️ Suggested Ring Road stops")
-            st.sidebar.caption(
-                "Add these as stops in Google Maps to keep your route on Route 1. "
-                "Then copy the new URL and paste it here."
-            )
-            stops_text = "\n".join([f"{i+1}. {town}" for i, town in enumerate(suggested)])
-            st.sidebar.text_area(
-                "Copy these towns:",
-                value=stops_text,
-                height=min(200, 30 + len(suggested) * 22),
-                help="Add each as a stop in Google Maps Directions",
-                key="suggested_stops"
-            )
 
 # --------------------------------------------------------------------------- #
 # Sidebar: Cache Management
@@ -294,8 +181,7 @@ long_url = acquire_google_maps_url(
     help_text="Open maps.google.com → Directions → build a route → Share → Copy link → paste here.",
 )
 st.caption(
-    "Don't have one? Use the sample Ring Road route already filled in, or paste "
-    "any route you build on Google Maps."
+    "Paste any Google Maps directions URL you build on Google Maps."
 )
 
 # --------------------------------------------------------------------------- #

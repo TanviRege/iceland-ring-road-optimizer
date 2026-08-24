@@ -108,9 +108,12 @@ def test_validate_place_url_no_dir():
     assert "/maps/dir/" in reason
 
 
-def test_default_url_is_valid():
-    ok, _ = validate_google_maps_url(DEFAULT_MAPS_URL)
-    assert ok is True
+def test_default_url_is_empty():
+    # DEFAULT_MAPS_URL is now empty string (no default route)
+    assert DEFAULT_MAPS_URL == ""
+    ok, reason = validate_google_maps_url(DEFAULT_MAPS_URL)
+    assert ok is False
+    assert "No URL" in reason
 
 
 # --------------------------------------------------------------------------- #
