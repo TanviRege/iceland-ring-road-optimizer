@@ -455,6 +455,15 @@ if currency == "USD":
         columns={c: c.replace("_isk", "_usd") for c in price_cols}
     )
 
+# ---- Round fuel prices to 2 decimal places (ISK/USD) ----
+_price_cols = [c for c in df_fuel_display.columns
+               if c in ("price_isk", "regular_price_isk", "discount_price_isk",
+                        "price_usd", "regular_price_usd", "discount_price_usd")]
+for _col in _price_cols:
+    df_fuel_display[_col] = df_fuel_display[_col].apply(
+        lambda v: round(v, 2) if pd.notna(v) else v
+    )
+
 # ---- Display raw data tables ------------------------------
 with st.expander("📋 Weather Telemetry — Live Data (Cached)", expanded=False):
     st.dataframe(df_wx_display, use_container_width=True)
@@ -523,7 +532,7 @@ if cached_routes:
     if currency == "USD":
         kpi4.metric("⛽ Cheapest Fuel", f"${_isk_to_usd(min_fuel):.2f}/L", cheapest_name)
     else:
-        kpi4.metric("⛽ Cheapest Fuel", f"{min_fuel:.1f} ISK/L", cheapest_name)
+        kpi4.metric("⛽ Cheapest Fuel", f"{min_fuel:.2f} ISK/L", cheapest_name)
     kpi5.metric("💨 Max Wind Gust", f"{max_gust:.1f} m/s")
 
     st.markdown("---")
@@ -1037,14 +1046,14 @@ if cached_routes:
         orientation="h",
         marker_color=bar_colors,
         text=df_fuel_top.apply(
-            lambda r: f"{price_prefix}{r[price_col]:.1f} {price_unit}  •  {r['company']}", axis=1
+            lambda r: f"{price_prefix}{r[price_col]:.2f} {price_unit}  •  {r['company']}", axis=1
         ),
         textposition="outside",
         textfont=dict(size=11),
         name="Regular Price",
         hovertemplate=(
             "<b>%{y}</b><br>"
-            f"Price: %{{x:.1f}} {price_unit}<br>"
+            f"Price: %{{x:.2f}} {price_unit}<br>"
             "<extra></extra>"
         ),
     ))
@@ -1061,12 +1070,12 @@ if cached_routes:
                 line=dict(width=1, color="#000"),
             ),
             text=df_fuel_top.loc[has_discount, discount_col].apply(
-                lambda v: f"{v:.1f}"
+                lambda v: f"{v:.2f}"
             ),
             textposition="middle left",
             textfont=dict(size=10, color="#fbbf24"),
             name="Discount Price",
-            hovertemplate=f"Discount: %{{x:.1f}} {price_unit}<extra></extra>",
+            hovertemplate=f"Discount: %{{x:.2f}} {price_unit}<extra></extra>",
         ))
 
     fig_fuel.update_layout(
