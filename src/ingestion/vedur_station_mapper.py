@@ -120,6 +120,34 @@ def decode_polyline(polyline_str: str) -> List[Tuple[float, float]]:
     return coordinates
 
 
+def _densify_polyline(poly_points: List[Tuple[float, float]], max_step_km: float = 2.0):
+    """
+    Resample a decoded polyline into a densified chain at roughly ``max_step_km``
+    spacing, returning ``(points, cumulative_distance_km)``.
+
+    All downstream sample points are positioned on this SAME cumulative-distance
+    scale, so route ordering stays monotonic even on winding roads (instead of
+    mixing road-step distances with straight-line polyline distances).
+    """
+    if not poly_points:
+        return [], []
+    out = [poly_points[0]]
+    dists = [0.0]
+    acc = 0.0
+    for i in range(len(poly_points) - 1):
+        a = poly_points[i]
+        b = poly_points[i + 1]
+        seg_len = haversine_km(a[0], a[1], b[0], b[1])
+        n = max(1, int(round(seg_len / max_step_km)))
+        for k in range(1, n + 1):
+            t = k / n
+            out.append((a[0] + (b[0] - a[0]) * t,
+                        a[1] + (b[1] - a[1]) * t))
+            acc += seg_len / n
+            dists.append(round(acc, 6))
+    return out, dists
+
+
 class VedurRouteWeatherMapper:
     """Maps Google Maps routes to active Vedur stations & fetches weather data."""
 
@@ -172,13 +200,31 @@ class VedurRouteWeatherMapper:
         Returns points sorted by distance from origin.
         """
         sample_points = []
-        
+
         # 1. Check if legs exist
         legs = directions_data.get("legs", [])
         if not legs:
             return sample_points
 
-        # Extract origin
+        # Decode the overview polyline once and densify it so every sample point
+        # can be measured on the SAME cumulative-distance scale.
+        overview_polyline = directions_data.get("overview_polyline")
+        poly_points = decode_polyline(overview_polyline) if overview_polyline else []
+        fine_pts, fine_dist = _densify_polyline(poly_points, max_step_km=2.0)
+
+        def route_position_km(lat: float, lng: float) -> float:
+            """Snap a coordinate onto the densified polyline and return its cumulative
+            distance from the origin (km). Falls back to 0 if no polyline is present."""
+            if not fine_pts:
+                return 0.0
+            best_d, best_i = float("inf"), 0
+            for i, (plat, plng) in enumerate(fine_pts):
+                d = haversine_km(lat, lng, plat, plng)
+                if d < best_d:
+                    best_d, best_i = d, i
+            return fine_dist[best_i]
+
+        # 2. Origin
         start_loc = legs[0].get("start_location", {})
         if start_loc:
             sample_points.append({
@@ -188,8 +234,7 @@ class VedurRouteWeatherMapper:
                 "distance_from_origin_km": 0.0
             })
 
-        # Process each leg & steps - track cumulative distance
-        cumulative_dist_km = 0.0
+        # 3. Step endpoints (positioned on the same polyline distance scale)
         for leg_idx, leg in enumerate(legs):
             steps_data = leg.get("steps", [])
             if isinstance(steps_data, list):
@@ -197,49 +242,43 @@ class VedurRouteWeatherMapper:
                     if isinstance(step, dict) and "end_location" in step:
                         end_loc = step["end_location"]
                         if isinstance(end_loc, dict) and "lat" in end_loc and "lng" in end_loc:
-                            step_dist = step.get("distance", {}).get("value", 0) / 1000.0  # meters to km
-                            cumulative_dist_km += step_dist
                             sample_points.append({
                                 "label": f"Leg {leg_idx + 1} Step {step_idx + 1}",
                                 "lat": end_loc["lat"],
                                 "lng": end_loc["lng"],
-                                "distance_from_origin_km": round(cumulative_dist_km, 2)
+                                "distance_from_origin_km": round(
+                                    route_position_km(end_loc["lat"], end_loc["lng"]), 2
+                                )
                             })
 
-        # Destination
+        # 4. Destination
         end_loc = legs[-1].get("end_location", {})
         if end_loc:
             sample_points.append({
                 "label": f"Destination: {legs[-1].get('end_address', 'End')}",
                 "lat": end_loc["lat"],
                 "lng": end_loc["lng"],
-                "distance_from_origin_km": round(cumulative_dist_km, 2)
+                "distance_from_origin_km": round(
+                    route_position_km(end_loc["lat"], end_loc["lng"]), 2
+                )
             })
 
-        # Polyline spatial sampling at 15km intervals along road
-        overview_polyline = directions_data.get("overview_polyline")
-        if overview_polyline:
-            poly_points = decode_polyline(overview_polyline)
-            if poly_points:
-                accumulated_dist = 0.0
-                last_pt = poly_points[0]
-                
-                for pt in poly_points[1:]:
-                    dist = haversine_km(last_pt[0], last_pt[1], pt[0], pt[1])
-                    accumulated_dist += dist
-                    if accumulated_dist >= sample_interval_km:
-                        sample_points.append({
-                            "label": f"Polyline Sample (~{accumulated_dist:.1f}km)",
-                            "lat": pt[0],
-                            "lng": pt[1],
-                            "distance_from_origin_km": round(accumulated_dist, 2)
-                        })
-                        accumulated_dist = 0.0
-                    last_pt = pt
+        # 5. Polyline spatial sampling at intervals (same distance scale)
+        if fine_pts:
+            last_sample_km = 0.0
+            for i, (plat, plng) in enumerate(fine_pts):
+                if fine_dist[i] - last_sample_km >= sample_interval_km:
+                    sample_points.append({
+                        "label": f"Polyline Sample (~{fine_dist[i]:.1f}km)",
+                        "lat": plat,
+                        "lng": plng,
+                        "distance_from_origin_km": round(fine_dist[i], 2)
+                    })
+                    last_sample_km = fine_dist[i]
 
-        # Sort all sample points by distance from origin to ensure correct route order
+        # 6. Sort all sample points by that single distance metric
         sample_points.sort(key=lambda p: p.get("distance_from_origin_km", 0.0))
-        
+
         return sample_points
 
     def map_route_to_station_ids(self, directions_data: Dict[str, Any], max_distance_km: float = 30.0, sample_interval_km: float = 15.0) -> List[Dict[str, Any]]:
