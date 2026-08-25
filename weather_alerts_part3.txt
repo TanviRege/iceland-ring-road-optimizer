@@ -1,0 +1,132 @@
+if alert_data:
+            # Create timeline visualization
+            fig_alerts = go.Figure()
+            
+            # Main route line
+            fig_alerts.add_trace(go.Scatter(
+                x=list(range(len(alert_data))),
+                y=[0] * len(alert_data),
+                mode="lines",
+                line=dict(color="#6b7280", width=4),  # Gray route line
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+            
+            # Alert markers
+            alert_x = []
+            alert_y = []
+            alert_text = []
+            alert_colors = []
+            alert_sizes = []
+            alert_symbols = []
+            
+            for i, alert in enumerate(alert_data):
+                alert_x.append(i)
+                alert_y.append(0)
+                
+                # Create hover text with alert details
+                hover_text = f"<b>{alert['station']}</b><br>"
+                hover_text += f"Weather: {alert['english']}<br>"
+                if alert['has_severe']:
+                    hover_text += f"Severe weather alert<br>"
+                hover_text += f"Wind: {alert['wind']:.1f} m/s<br>"
+                hover_text += f"<i>Alert level: {alert['alert_level'].upper()}</i>"
+                
+                alert_text.append(hover_text)
+                alert_colors.append(alert['alert_color'])
+                
+                # Size based on severity
+                if alert['alert_level'] == "danger":
+                    alert_sizes.append(20)
+                    alert_symbols.append("triangle-down")  # Down triangle for danger
+                elif alert['alert_level'] == "warning":
+                    alert_sizes.append(18)
+                    alert_symbols.append("triangle-down")  # Down triangle for warning
+                elif alert['alert_level'] == "caution":
+                    alert_sizes.append(16)
+                    alert_symbols.append("triangle-down")  # Down triangle for caution
+                else:
+                    alert_sizes.append(14)
+                    alert_symbols.append("circle")  # Circle for info
+            
+            fig_alerts.add_trace(go.Scatter(
+                x=alert_x,
+                y=alert_y,
+                mode="markers+text",
+                marker=dict(
+                    size=alert_sizes,
+                    color=alert_colors,
+                    symbol=alert_symbols,
+                    line=dict(width=2, color="white")
+                ),
+                text=[alert["english"] for alert in alert_data],
+                textposition="top center",
+                textfont=dict(size=10, color="white", family="Arial Black"),
+                hovertext=alert_text,
+                hoverinfo="text",
+                name="Weather Alerts",
+                showlegend=False
+            ))
+            
+            # Add START marker
+            fig_alerts.add_trace(go.Scatter(
+                x=[-0.5],
+                y=[0],
+                mode="markers+text",
+                marker=dict(
+                    size=18,
+                    color="#10b981",  # Green for start
+                    symbol="triangle-up",
+                    line=dict(width=2, color="white")
+                ),
+                text=["START"],
+                textposition="bottom center",
+                textfont=dict(size=10, color="#10b981", family="Arial Black"),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+            
+            # Add END marker
+            fig_alerts.add_trace(go.Scatter(
+                x=[len(alert_data) - 0.5],
+                y=[0],
+                mode="markers+text",
+                marker=dict(
+                    size=18,
+                    color="#dc2626",  # Red for end
+                    symbol="triangle-down",
+                    line=dict(width=2, color="white")
+                ),
+                text=["END"],
+                textposition="bottom center",
+                textfont=dict(size=10, color="#dc2626", family="Arial Black"),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+            
+            fig_alerts.update_layout(
+                template="plotly_dark",
+                height=200,
+                xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+                yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1, 1]),
+                margin=dict(l=20, r=20, t=10, b=10),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                hovermode="closest",
+            )
+            
+            st.caption(
+                "▲ Markers show weather alerts along your route. "
+                "Colors indicate severity: 🔴 Red (danger) | 🟠 Orange (warning) | 🟡 Amber (caution) | 🟢 Green (info). "
+                "Hover over markers for details. Triangle-down symbols indicate alert positions."
+            )
+            
+            st.plotly_chart(fig_alerts, use_container_width=True)
+        else:
+            st.info("No weather data available for alerts.")
+    else:
+        st.info("Forecast weather data not available for alerts.")
+
+    # ==================================================================
+    # CHART 1: Road Safety Heatmap (Forecast at ETA)
+    # ==================================================================

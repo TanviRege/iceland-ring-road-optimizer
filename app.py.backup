@@ -533,147 +533,95 @@ if cached_routes:
     # ==================================================================
     st.markdown("### ⚠️ Weather Alerts Along Route")
     
-    # Icelandic weather type translations (English only)
+    # Icelandic weather type translations (to English only)
     WEATHER_TRANSLATIONS = {
-        "Alskýjað": "Overcast", "Skýjað": "Cloudy", "Léttskýjað": "Partly Cloudy",
-        "Heiðskírt": "Fair / Clear", "Lítils háttar rigning": "Light Rain",
-        "Rigning": "Rain", "Mikil rigning": "Heavy Rain", "Skúrir": "Showers",
-        "Snjór": "Snow", "Snjóskúrir": "Snow Showers", "Frost": "Frost",
-        "Gluggaveður": "Gluggaveður (Window Weather)", "Dimma": "Fog",
-        "Rok": "Blowing Snow", "Hlý": "Mild", "Kaldi": "Cold",
+        "Alskýjað": "Overcast",
+        "Skýjað": "Cloudy",
+        "Léttskýjað": "Partly Cloudy",
+        "Heiðskírt": "Fair / Clear",
+        "Lítils háttar rigning": "Light Rain",
+        "Rigning": "Rain",
+        "Mikil rigning": "Heavy Rain",
+        "Skúrir": "Showers",
+        "Snjór": "Snow",
+        "Snjóskúrir": "Snow Showers",
+        "Frost": "Frost",
+        "Gluggaveður": "Gluggaveður (Window Weather)",
+        "Dimma": "Fog",
+        "Rok": "Blowing Snow",
+        "Hlý": "Mild",
+        "Kaldi": "Cold",
     }
     
-    # Check if we have forecast weather data
     if "forecast_weather_type" in df_wx.columns and df_wx["forecast_weather_type"].notna().any():
-        # Prepare alert data
-        alert_data = []
+        alerts = []
         for _, row in df_wx.iterrows():
             if pd.notna(row.get("forecast_weather_type")):
                 icelandic = row["forecast_weather_type"]
                 english = WEATHER_TRANSLATIONS.get(icelandic, icelandic)
                 station = row["station_name"]
+                eta = row.get("eta_utc", "Unknown")
+                if pd.notna(eta):
+                    try:
+                        eta_str = pd.to_datetime(eta).strftime("%H:%M")
+                    except:
+                        eta_str = str(eta)
+                else:
+                    eta_str = "N/A"
+                
+                # Determine alert level based on weather + wind
+                alert_level = "info"
+                alert_icon = "ℹ️"
+                
                 wind = row.get("forecast_wind_speed_ms", 0)
-                
-                # Determine severity
-                severe_weather = ["Rigning", "Mikil rigning", "Snjór", "Snjóskúrir", "Frost", "Dimma", "Rok"]
-                has_severe = any(st in icelandic for st in severe_weather)
-                
-                if wind >= 22 or has_severe:
+                if wind >= 22:
                     alert_level = "danger"
-                    alert_color = "#dc2626"  # Red
+                    alert_icon = "🔴"
                 elif wind >= 18:
                     alert_level = "warning"
-                    alert_color = "#f97316"  # Orange
+                    alert_icon = "🟠"
                 elif wind >= 12:
                     alert_level = "caution"
-                    alert_color = "#f59e0b"  # Yellow
-                else:
-                    alert_level = "safe"
-                    alert_color = "#10b981"  # Green
+                    alert_icon = "🟡"
                 
-                alert_data.append({
-                    "station": station,
-                    "english": english,
+                # Check for severe weather types
+                severe_types = ["Rigning", "Mikil rigning", "Snjór", "Snjóskúrir", "Frost", "Dimma", "Rok"]
+                if any(st in icelandic for st in severe_types):
+                    if alert_level == "info":
+                        alert_level = "caution"
+                        alert_icon = "🟡"
+                
+                alerts.append({
                     "level": alert_level,
-                    "color": alert_color,
-                    "wind": wind
+                    "icon": alert_icon,
+                    "station": station,
+                    "eta": eta_str,
+                    "icelandic": icelandic,
+                    "english": english,
+                    "wind": f"{wind:.1f} m/s" if pd.notna(wind) else "N/A",
                 })
-        if alert_data:
-            # Create timeline
-            fig_alerts = go.Figure()
+        
+        if alerts:
+            # Sort by ETA
+            alerts.sort(key=lambda x: x["eta"])
             
-            # Route line
-            fig_alerts.add_trace(go.Scatter(
-                x=list(range(len(alert_data))),
-                y=[0] * len(alert_data),
-                mode="lines",
-                line=dict(color="#6b7280", width=4),
-                showlegend=False,
-                hoverinfo="skip",
-            ))
-            
-            # Alert markers
-            alert_x = list(range(len(alert_data)))
-            alert_y = [0] * len(alert_data)
-            alert_text = []
-            marker_colors = []
-            marker_sizes = []
-            marker_symbols = []
-            
-            for alert in alert_data:
-                hover = f"<b>{alert['station']}</b><br>Weather: {alert['english']}<br>"
-                hover += f"Wind: {alert['wind']:.1f} m/s<br><i>{alert['level'].upper()}</i>"
-                alert_text.append(hover)
-                marker_colors.append(alert['color'])
-                
-                if alert['level'] == "danger":
-                    marker_sizes.append(20)
-                    marker_symbols.append("triangle-down")
-                elif alert['level'] == "warning":
-                    marker_sizes.append(18)
-                    marker_symbols.append("triangle-down")
-                elif alert['level'] == "caution":
-                    marker_sizes.append(16)
-                    marker_symbols.append("triangle-down")
+            # Display as cards
+            for alert in alerts:
+                if alert["level"] == "danger":
+                    st.error(f"{alert['icon']} **{alert['station']}** (arrive ~{alert['eta']}): **{alert['english']}** ({alert['icelandic']}) | Wind: {alert['wind']}")
+                elif alert["level"] == "warning":
+                    st.warning(f"{alert['icon']} **{alert['station']}** (arrive ~{alert['eta']}): **{alert['english']}** ({alert['icelandic']}) | Wind: {alert['wind']}")
+                elif alert["level"] == "caution":
+                    st.info(f"{alert['icon']} **{alert['station']}** (arrive ~{alert['eta']}): **{alert['english']}** ({alert['icelandic']}) | Wind: {alert['wind']}")
                 else:
-                    marker_sizes.append(14)
-                    marker_symbols.append("circle")
-            
-            fig_alerts.add_trace(go.Scatter(
-                x=alert_x,
-                y=alert_y,
-                mode="markers+text",
-                marker=dict(
-                    size=marker_sizes,
-                    color=marker_colors,
-                    symbol=marker_symbols,
-                    line=dict(width=2, color="white")
-                ),
-                text=[a["english"] for a in alert_data],
-                textposition="top center",
-                textfont=dict(size=10, color="white", family="Arial Black"),
-                hovertext=alert_text,
-                hoverinfo="text",
-                showlegend=False
-            ))
-            
-            # START and END markers
-            fig_alerts.add_trace(go.Scatter(
-                x=[-0.5], y=[0], mode="markers+text",
-                marker=dict(size=18, color="#10b981", symbol="triangle-up", line=dict(width=2, color="white")),
-                text=["START"], textposition="bottom center",
-                textfont=dict(size=10, color="#10b981", family="Arial Black"),
-                showlegend=False, hoverinfo="skip"
-            ))
-            
-            fig_alerts.add_trace(go.Scatter(
-                x=[len(alert_data) - 0.5], y=[0], mode="markers+text",
-                marker=dict(size=18, color="#dc2626", symbol="triangle-down", line=dict(width=2, color="white")),
-                text=["END"], textposition="bottom center",
-                textfont=dict(size=10, color="#dc2626", family="Arial Black"),
-                showlegend=False, hoverinfo="skip"
-            ))
-            
-            fig_alerts.update_layout(
-                template="plotly_dark", height=200,
-                xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-                yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1, 1]),
-                margin=dict(l=20, r=20, t=10, b=10),
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                hovermode="closest"
-            )
-            
-            st.caption(
-                "Markers show weather alerts along your route. "
-                "Colors: 🔴 Red (danger) | 🟠 Orange (warning) | 🟡 Yellow (caution) | 🟢 Green (safe). "
-                "Hover for Name of Waypoints and Details."
-            )
-            
-            st.plotly_chart(fig_alerts, use_container_width=True)
+                    st.success(f"{alert['icon']} **{alert['station']}** (arrive ~{alert['eta']}): **{alert['english']}** ({alert['icelandic']}) | Wind: {alert['wind']}")
         else:
-            st.info("No weather alert data available.")
+            st.success("✅ No significant weather alerts for your route at ETA.")
     else:
-        st.info("Forecast weather data not available for alerts.")    # CHART 1: Road Safety Heatmap (Forecast at ETA)
+        st.info("Forecast weather data not available for alerts.")
+
+    # ==================================================================
+    # CHART 1: Road Safety Heatmap (Forecast at ETA)
     # ==================================================================
     st.markdown("### 🛣️ Road Safety Heatmap")
     st.caption(

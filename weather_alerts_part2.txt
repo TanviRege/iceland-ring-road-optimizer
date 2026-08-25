@@ -1,0 +1,37 @@
+# Prepare data for timeline
+        alert_data = []
+        for _, row in df_wx.iterrows():
+            if pd.notna(row.get("forecast_weather_type")):
+                icelandic = row["forecast_weather_type"]
+                english = WEATHER_TRANSLATIONS.get(icelandic, icelandic)
+                station = row["station_name"]
+                
+                # Determine alert severity based on weather and wind
+                wind = row.get("forecast_wind_speed_ms", 0)
+                
+                # Base level on weather type
+                severe_weather = ["Rigning", "Mikil rigning", "Snjór", "Snjóskúrir", "Frost", "Dimma", "Rok"]
+                has_severe_weather = any(st in icelandic for st in severe_weather)
+                
+                # Determine alert level
+                if wind >= 22 or has_severe_weather:
+                    alert_level = "danger"
+                    alert_color = "#dc2626"  # Red
+                elif wind >= 18:
+                    alert_level = "warning"
+                    alert_color = "#f97316"  # Orange
+                elif wind >= 12:
+                    alert_level = "caution"
+                    alert_color = "#f59e0b"  # Amber
+                else:
+                    alert_level = "info"
+                    alert_color = "#10b981"  # Emerald (for mild alerts)
+                
+                alert_data.append({
+                    "station": station,
+                    "english": english,
+                    "alert_level": alert_level,
+                    "alert_color": alert_color,
+                    "wind": wind,
+                    "has_severe": has_severe_weather
+                })
