@@ -942,6 +942,7 @@ if cached_routes:
     st.markdown("### 🌬️ Wind Conditions Along Route")
     st.caption(
         "▮ **Solid bars** = Current observations (now). "
+        "▫️ **Dashed line** = Forecast wind at your ETA. "
         "Dashed lines mark camper-van safety thresholds."
     )
 
@@ -975,6 +976,18 @@ if cached_routes:
         legendgroup="current",
         offsetgroup=1,
     ))
+
+    # --- Forecast Wind Speed at ETA (dashed line) ---
+    if "forecast_wind_speed_ms" in df_wx.columns and df_wx["forecast_wind_speed_ms"].notna().any():
+        fig_wind.add_trace(go.Scatter(
+            name="▫️ Forecast Wind (at ETA)",
+            x=df_wx["station_name"],
+            y=df_wx["forecast_wind_speed_ms"],
+            mode="lines+markers",
+            line=dict(color="#60a5fa", width=3, dash="dash"),
+            marker=dict(size=8, color="#60a5fa", symbol="diamond"),
+            hovertemplate="<b>%{x}</b><br>Forecast at ETA: %{y:.1f} m/s<extra></extra>",
+        ))
 
     # Danger thresholds (for Trafic 3 camper van)
     fig_wind.add_hline(

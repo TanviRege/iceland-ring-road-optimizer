@@ -297,7 +297,8 @@ class VedurRouteWeatherMapper:
             
             d_elem = station_elem.find("D")
             if d_elem is not None and d_elem.text:
-                obs["d"] = d_elem.text
+                obs["d"] = _wind_dir_to_degrees(d_elem.text)
+                obs["d_txt"] = _wind_dir_to_cardinal(d_elem.text)
             
             fx_elem = station_elem.find("FX")
             if fx_elem is not None and fx_elem.text:
@@ -404,8 +405,8 @@ class VedurRouteWeatherMapper:
                 
                 d_elem = forecast_elem.find("D")
                 if d_elem is not None and d_elem.text:
-                    fc["d"] = d_elem.text
-                    # Also convert to cardinal direction
+                    fc["d"] = _wind_dir_to_degrees(d_elem.text)
+                    # Also convert to English cardinal name
                     fc["d_txt"] = _wind_dir_to_cardinal(d_elem.text)
                 
                 t_elem = forecast_elem.find("T")

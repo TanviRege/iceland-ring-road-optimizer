@@ -225,6 +225,7 @@ def _create_telemetry_from_live_data(
             "distance_km": distance_km,
             # Forecast fields (what weather will be like at ETA)
             "forecast_temp_c": forecast_row.get("forecast_temp_c") if forecast_row is not None else None,
+            "forecast_wind_speed_ms": forecast_row.get("forecast_wind_speed_ms") if forecast_row is not None else None,
             "forecast_wind_dir_deg": forecast_row.get("forecast_wind_dir_deg") if forecast_row is not None else None,
             "forecast_wind_dir_cardinal": forecast_row.get("forecast_wind_dir_cardinal") if forecast_row is not None else None,
             "forecast_weather_type": forecast_row.get("forecast_weather_type") if forecast_row is not None else None,
