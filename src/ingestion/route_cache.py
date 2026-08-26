@@ -259,9 +259,8 @@ def _create_fuel_stations_df(fuel_stations: List[Dict], directions: Dict = None)
             near_lat = fs.get("near_waypoint_lat")
             near_lon = fs.get("near_waypoint_lon")
             if near_lat and near_lon:
-                # Use accumulated distance from the route sample points
+                # Fallback: straight-line distance from the first route waypoint (origin).
                 from src.ingestion.vedur_station_mapper import haversine_km
-                # Simple approximation: use distance from first waypoint (origin)
                 route_waypoints = _directions_to_waypoints(directions)
                 if route_waypoints:
                     origin_lat, origin_lon = route_waypoints[0]
@@ -319,7 +318,7 @@ def get_route_data(
         matched_stations = structure["matched_stations"]
         route_order = structure["route_order"]
     
-# Initialize forecast_df to empty (will be populated if fresh structure fetched)
+# Initialize DataFrames; each is (re)populated below from the cache or a fresh fetch.
     forecast_df = pd.DataFrame()
     weather_df = pd.DataFrame()
     if not force_refresh and _is_cache_valid(metadata_path, WEATHER_TTL) and weather_path.exists():

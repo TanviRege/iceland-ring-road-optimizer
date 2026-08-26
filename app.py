@@ -228,7 +228,6 @@ if st.session_state.directions is None:
         st.session_state.user_waypoints = user_waypoints
         if not directions:
             st.error("❌ Directions API call failed. Check your GOOGLE_MAPS_API_KEY and URL.")
-            st.error("❌ Directions API call failed. Check your GOOGLE_MAPS_API_KEY and URL.")
 
 directions = st.session_state.get("directions")
 if not directions:
@@ -542,7 +541,8 @@ if cached_routes:
     # ==================================================================
     st.markdown("### ⚠️ Weather Alerts Along Route")
     
-    # Icelandic weather type translations (English only)
+    # Map Vedur's Icelandic weather-type labels to English translations.
+    # (Forecast/observation text is returned by the API in Icelandic.)
     WEATHER_TRANSLATIONS = {
         "Alskýjað": "Overcast", "Skýjað": "Cloudy", "Léttskýjað": "Partly Cloudy",
         "Heiðskírt": "Fair / Clear", "Lítils háttar rigning": "Light Rain",
@@ -564,8 +564,10 @@ if cached_routes:
                 wind = row.get("forecast_wind_speed_ms", 0)
                 
                 # Determine severity
-                severe_weather = ["Rigning", "Mikil rigning", "Snjór", "Snjóskúrir", "Frost", "Dimma", "Rok"]
-                has_severe = any(st in icelandic for st in severe_weather)
+                # Match severe conditions exactly (a substring match would also
+                # flag "Light Rain" because it contains "Rigning"/"Rok" as a suffix).
+                severe_weather = {"Mikil rigning", "Rigning", "Snjór", "Snjóskúrir", "Frost", "Dimma", "Rok"}
+                has_severe = icelandic in severe_weather
                 
                 if wind >= 22 or has_severe:
                     alert_level = "danger"
@@ -682,7 +684,10 @@ if cached_routes:
         else:
             st.info("No weather alert data available.")
     else:
-        st.info("Forecast weather data not available for alerts.")    # CHART 1: Road Safety Heatmap (Forecast at ETA)
+        st.info("Forecast weather data not available for alerts.")
+
+    # ==================================================================
+    # CHART 1: Road Safety Heatmap (Forecast at ETA)
     # ==================================================================
     st.markdown("### 🛣️ Road Safety Heatmap")
     st.caption(
@@ -699,8 +704,10 @@ if cached_routes:
 
     # Use forecast at ETA if available, otherwise fall back to current observations
     if has_forecast:
-        wind_source = df_wx.get("forecast_wind_gust_ms", df_wx["forecast_wind_speed_ms"])
-        temp_source = df_wx.get("forecast_temp_c", df_wx["air_temp_c"])
+        # The Vedur forecast API exposes wind SPEED (F), not wind gust, so we use the
+        # forecast wind speed here; current observations remain wind_gust_max_ms.
+        wind_source = df_wx["forecast_wind_speed_ms"]
+        temp_source = df_wx["forecast_temp_c"]
         source_label = " (Forecast at ETA)"
     else:
         wind_source = df_wx["wind_gust_max_ms"]

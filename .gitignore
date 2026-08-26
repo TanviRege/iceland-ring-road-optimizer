@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- App runtime caches & generated data -----------------------------------
+# These are regenerated on demand and contain user route / cache payloads; keep
+# them out of version control for a clean, privacy-safe public repository.
+data/
