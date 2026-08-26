@@ -105,7 +105,7 @@ def test_validate_non_google():
 def test_validate_place_url_no_dir():
     ok, reason = validate_google_maps_url("https://www.google.com/maps/place/Reykjavik")
     assert ok is False
-    assert "/maps/dir/" in reason
+    assert "directions" in reason.lower()
 
 
 def test_default_url_is_empty():
@@ -114,6 +114,103 @@ def test_default_url_is_empty():
     ok, reason = validate_google_maps_url(DEFAULT_MAPS_URL)
     assert ok is False
     assert "No URL" in reason
+
+
+# --------------------------------------------------------------------------- #
+# short Google Maps share links (maps.app.goo.gl/...) -> resolve then parse
+# --------------------------------------------------------------------------- #
+from unittest import mock
+
+from src.interface.maps_url_interface import _resolve_cache
+
+
+def _mock_redirect_response(*_args, **_kwargs):
+    """Fake requests.get() that 'redirects' a short link to SAMPLE_URL."""
+
+    class _Resp:
+        url = SAMPLE_URL
+
+    return _Resp()
+
+
+def test_short_link_resolves_then_parses():
+    _resolve_cache.clear()
+    short = "https://maps.app.goo.gl/txqDbX"
+    with mock.patch(
+        "src.interface.maps_url_interface.requests.get",
+        side_effect=_mock_redirect_response,
+    ):
+        info = parse_google_maps_url(short)
+    assert info is not None
+    assert info["origin"] == "Reykjavik, Iceland"
+    assert info["destination"] == "Skaftafell, 785 Skaftafell, Iceland"
+    # source_url keeps the original pasted link
+    assert info["source_url"] == short
+
+
+def test_short_link_resolves_then_validates():
+    _resolve_cache.clear()
+    short = "https://maps.app.goo.gl/txPqB"
+    with mock.patch(
+        "src.interface.maps_url_interface.requests.get",
+        side_effect=_mock_redirect_response,
+    ):
+        ok, reason = validate_google_maps_url(short)
+    assert ok is True
+    assert reason == "ok"
+
+
+def test_short_link_unresolvable_falls_back_to_error():
+    _resolve_cache.clear()
+
+    def _raise(*_args, **_kwargs):
+        raise IOError("offline")
+
+    with mock.patch(
+        "src.interface.maps_url_interface.requests.get",
+        side_effect=_raise,
+    ):
+        ok, reason = validate_google_maps_url("https://maps.app.goo.gl/txAbC")
+    assert ok is False
+
+
+# --------------------------------------------------------------------------- #
+# modern query-parameter directions URL (?saddr=...&daddr=...)
+# --------------------------------------------------------------------------- #
+def test_parse_query_form_single_stop():
+    # What a modern short share link expands to (Reykjavik -> Vik).
+    url = ("https://www.google.com/maps?saddr=Reykjav%C3%ADk,+Iceland"
+           "&daddr=Vik,+870,+Iceland&dirflg=dt&g_st=ic")
+    info = parse_google_maps_url(url)
+    assert info is not None
+    assert info["origin"] == "Reykjavík, Iceland"
+    assert info["destination"] == "Vik, 870, Iceland"
+    assert info["waypoints"] is None
+    assert info["raw_places"] == ["Reykjavík, Iceland", "Vik, 870, Iceland"]
+
+
+def test_parse_query_form_with_stops():
+    # Multiple daddr -> intermediate waypoints + final destination.
+    url = ("https://www.google.com/maps?saddr=Reykjavik"
+           "&daddr=Borgarnes&daddr=Akureyri&daddr=Vik&dirflg=dt")
+    info = parse_google_maps_url(url)
+    assert info is not None
+    assert info["origin"] == "Reykjavik"
+    assert info["destination"] == "Vik"
+    assert info["waypoints"] == ["Borgarnes", "Akureyri"]
+
+
+def test_parse_query_form_missing_params_returns_none():
+    url = "https://www.google.com/maps?q=Reykjavik&z=8"
+    assert parse_google_maps_url(url) is None
+
+
+def test_validate_query_form():
+    url = ("https://www.google.com/maps?saddr=Reykjav%C3%ADk,+Iceland"
+           "&daddr=Vik,+870,+Iceland&dirflg=dt")
+    ok, reason = validate_google_maps_url(url)
+    assert ok is True
+    assert reason == "ok"
 
 
 # --------------------------------------------------------------------------- #

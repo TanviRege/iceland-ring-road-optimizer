@@ -25,7 +25,7 @@ streamlit run app.py
 Opens at http://localhost:8501.
 
 **In the app:**
-1. Paste any Google Maps directions URL (Share -> Copy link from maps.google.com).
+1. Paste any Google Maps **directions** URL — a long `/maps/dir/…` link **or** the short share link from the Google Maps **Share → Copy link** button (e.g. `https://maps.app.goo.gl/…`).
 2. Click **Fetch directions** to load the route, distance, and drive time.
 3. Weather stations are matched automatically in route order and shown with live + forecast conditions.
 4. Review the route-ordered dashboard: risk heatmap, temperature, wind, weather alerts, and fuel prices.

@@ -26,7 +26,9 @@ from __future__ import annotations
 import os
 import re
 from typing import Callable, Dict, Optional, Tuple
-from urllib.parse import unquote_plus
+from urllib.parse import parse_qsl, unquote_plus, urlsplit
+
+import requests
 
 try:
     from dotenv import load_dotenv
@@ -42,6 +44,71 @@ DEFAULT_MAPS_URL: str = os.environ.get("DEFAULT_MAPS_URL", "")
 _URL_DIR_RE = re.compile(r"/maps/dir/", re.IGNORECASE)
 # After the places, Google appends either a viewport ("/@") or a "data=" block.
 _SPLIT_RE = re.compile(r"/(?:@|data=)", re.IGNORECASE)
+
+# Google's "Share -> Copy link" button often copies a SHORT redirect link
+# (e.g. https://maps.app.goo.gl/xyz) rather than the long /maps/dir/... URL.
+# These markers let us detect that form and expand it before validation/parsing.
+_GOOGLE_SHORT_LINK_MARKERS = ("goo.gl", "maps.app.goo.gl", "g.co")
+# Per-session cache so validate() -> parse() only follows the redirect once.
+_resolve_cache: Dict[str, str] = {}
+
+
+def _resolve_google_maps_link(url: str) -> str:
+    """Expand a Google Maps short/redirect link into its final destination URL.
+
+    Notes
+    -----
+    * Short share links (maps.app.goo.gl/...) are HTTP 3xx redirects; we follow
+      them and return the final long ``/maps/dir/...`` URL.
+    * Non-short URLs are returned unchanged (no network call).
+    * The result is cached for the session so repeated calls don't re-fetch.
+    """
+    if url in _resolve_cache:
+        return _resolve_cache[url]
+
+    result = url
+    if any(marker in url.lower() for marker in _GOOGLE_SHORT_LINK_MARKERS):
+        try:
+            # allow_redirects=True follows the short-hand chain; final URL is in
+            # ``response.url``.
+            response = requests.get(url, allow_redirects=True, timeout=15)
+            if response and response.url:
+                result = response.url
+        except Exception:
+            # Any failure (offline / blocked) -> leave unchanged; validation will
+            # then report it as "not a Google Maps link", which is accurate.
+            result = url
+    _resolve_cache[url] = result
+    return result
+
+
+def _parse_query_directions_url(url: str) -> Optional[Dict[str, Any]]:
+    """Extract a route from Google Maps' *query-parameter* directions format.
+
+    Modern "Share -> Copy link" URLs (especially short links like
+    ``maps.app.goo.gl/...`` after following the redirect) expand to::
+
+        https://www.google.com/maps?saddr=<start>&daddr=<stop>&daddr=<dest>&dirflg=dt
+
+    instead of the older ``/maps/dir/Origin/Dest/...`` path form. This helper
+    pulls the origin from ``saddr`` and the destination from the *last* ``daddr``
+    (any earlier ``daddr`` values become intermediate waypoints). Returns None
+    if the URL is not in this form.
+    """
+    pairs: Dict[str, List[str]] = {}
+    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+        pairs.setdefault(key, []).append(value)
+
+    saddr = pairs.get("saddr") or []
+    daddr = pairs.get("daddr") or []
+    if not saddr or not daddr:
+        return None
+
+    return {
+        "origin": saddr[0],
+        "destination": daddr[-1],
+        "waypoints": list(daddr[:-1]),
+    }
 
 
 def detect_input_backend() -> str:
@@ -90,17 +157,24 @@ def validate_google_maps_url(url: Optional[str]) -> Tuple[bool, str]:
     if not raw.startswith(("http://", "https://")):
         raw = "https://" + raw
 
+    # Accept short Google Maps share links (maps.app.goo.gl/...) by resolving
+    # them to the full directions URL before the structural checks below.
+    raw = _resolve_google_maps_link(raw)
+
     if "google.com/maps" not in raw:
         return False, (
             "URL does not look like a Google Maps link. "
             "Open maps.google.com, build a route, and paste the share link."
         )
 
-    if not _URL_DIR_RE.search(raw):
+    # A valid directions URL is either the classic "/maps/dir/..." path form,
+    # or the modern query form (?saddr=...&daddr=...) that share links expand to.
+    is_query_dirs = _parse_query_directions_url(raw) is not None
+    if not (_URL_DIR_RE.search(raw) or is_query_dirs):
         return False, (
-            "This is not a *directions* URL -- it must contain "
-            "`/maps/dir/Origin/Destination`. Build a route on maps.google.com "
-            "then use the 'Share -> Copy link' button."
+            "This URL is not a *directions* link. It should be a Google Maps "
+            "directions URL (e.g. a 'Share -> Copy link' short link). Build a "
+            "route on maps.google.com, then use the 'Share' button."
         )
 
     # At least origin + destination must be parseable.
@@ -116,13 +190,17 @@ def validate_google_maps_url(url: Optional[str]) -> Tuple[bool, str]:
 
 
 def parse_google_maps_url(url: Optional[str]) -> Optional[Dict[str, object]]:
-    """Extract origin / destination / waypoints from a Google Maps dir URL.
+    """Extract origin / destination / waypoints from a Google Maps directions URL.
 
     Handles the common share-link shapes::
 
         https://www.google.com/maps/dir/A/B/C/@lat,lng,zoom/data=...
         https://maps.google.com/maps/dir/A/B/C?entry=ttu
         https://www.google.com/maps/dir/A/B/%20%20/data=...   (%20 encoded)
+        https://www.google.com/maps?saddr=<start>&daddr=<dest>  (query form)
+
+    Short links (e.g. ``maps.app.goo.gl/...``) are resolved to their long form
+    first, so both the path form and the modern query form are supported.
 
     Returns a dict with keys ``origin``, ``destination``, ``waypoints``
     (list or ``None``), ``raw_places`` and ``source_url``; or ``None`` if the
@@ -135,28 +213,52 @@ def parse_google_maps_url(url: Optional[str]) -> Optional[Dict[str, object]]:
     if not raw.startswith(("http://", "https://")):
         raw = "https://" + raw
 
-    if not _URL_DIR_RE.search(raw):
+    # Accept short Google links here too, so parse can be called directly
+    # (independent of validate) and still expand maps.app.goo.gl/... URLs.
+    raw = _resolve_google_maps_link(raw)
+
+    # Short links are expanded above; handle either directions format:
+    #   A) classic path form   /maps/dir/Origin/Dest/@...
+    #   B) modern query form   ?saddr=<start>&daddr=<stop>&daddr=<dest>
+    if _URL_DIR_RE.search(raw):
+        # Everything after "/maps/dir/".
+        after_dir = _URL_DIR_RE.split(raw, maxsplit=1)[1]
+        # Cut at the viewport "/@" or the "data=" analytics block, whichever comes first.
+        after_dir = _SPLIT_RE.split(after_dir, maxsplit=1)[0]
+
+        segments = [seg for seg in after_dir.split("/") if seg.strip()]
+
+        # Decode percent-encoding AND '+' -> space in one step (unquote_plus), then
+        # strip stray leading/trailing whitespace that a leading '+' can produce.
+        places = [unquote_plus(seg).strip() for seg in segments]
+        places = [p for p in places if p]
+        if len(places) < 2:
+            return None
+
+        waypoints = places[1:-1] if places[1:-1] else None
+        return {
+            "origin": places[0],
+            "destination": places[-1],
+            "waypoints": waypoints,
+            "raw_places": places,
+            "source_url": url,
+        }
+
+    # Modern query-parameter directions (what short share links expand to).
+    qdir = _parse_query_directions_url(raw)
+    if qdir is None:
         return None
 
-    # Everything after "/maps/dir/".
-    after_dir = _URL_DIR_RE.split(raw, maxsplit=1)[1]
-    # Cut at the viewport "/@" or the "data=" analytics block, whichever comes first.
-    after_dir = _SPLIT_RE.split(after_dir, maxsplit=1)[0]
+    origin = unquote_plus(qdir["origin"]).strip()
+    destination = unquote_plus(qdir["destination"]).strip()
+    waypoints = [unquote_plus(w).strip() for w in qdir["waypoints"]]
+    waypoints = [w for w in waypoints if w]
 
-    segments = [seg for seg in after_dir.split("/") if seg.strip()]
-    # Decode percent-encoding AND '+' -> space in one step (unquote_plus), then
-    # strip stray leading/trailing whitespace that a leading '+' can produce.
-    places = [unquote_plus(seg).strip() for seg in segments]
-    places = [p for p in places if p]
-
-    if len(places) < 2:
-        return None
-
-    waypoints = places[1:-1] if places[1:-1] else None
+    places = [origin, *waypoints, destination]
     return {
-        "origin": places[0],
-        "destination": places[-1],
-        "waypoints": waypoints,
+        "origin": origin,
+        "destination": destination,
+        "waypoints": waypoints or None,
         "raw_places": places,
         "source_url": url,
     }
