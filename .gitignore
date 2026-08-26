@@ -221,3 +221,6 @@ __marimo__/
 # These are regenerated on demand and contain user route / cache payloads; keep
 # them out of version control for a clean, privacy-safe public repository.
 data/
+
+# macOS
+.DS_Store
