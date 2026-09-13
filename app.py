@@ -283,18 +283,19 @@ try:
         
         markers = pd.DataFrame(marker_data)
         
-        # Create map with route line + markers using CartoDB Positron (lighter, English labels)
-        fig = px.line_mapbox(
-            pts, lat="lat", lon="lng", zoom=6, height=480,
+        # Plotly 6.x: use px.line_map (line_mapbox was removed)
+        pts = pts.rename(columns={"lng": "lon"})
+        fig = px.line_map(
+            pts, lat="lat", lon="lon", zoom=6, height=480,
             title="Route Overview",
         )
         # Hide legend for the route line
         fig.data[0].update(showlegend=False, name="Route", hoverinfo="skip")
         
-        # Add origin marker (green) - use go.Scattermapbox directly to avoid duplicate legend entries
+        # Add origin marker (green) - use go.Scattermap directly to avoid duplicate legend entries
         origin_m = markers[markers["type"] == "origin"]
         if not origin_m.empty:
-            fig.add_trace(go.Scattermapbox(
+            fig.add_trace(go.Scattermap(
                 lat=origin_m["lat"],
                 lon=origin_m["lon"],
                 mode="markers",
@@ -305,7 +306,7 @@ try:
                 hovertemplate="<b>%{hovertext}</b><br>Origin<extra></extra>",
             ))
         
-        # Add waypoint markers (blue) - use go.Scattermapbox directly
+        # Add waypoint markers (blue) - use go.Scattermap directly
         # Use user_waypoints from session state (original waypoints from Google Maps URL)
         # because Directions API with "via:" waypoints doesn't create separate legs
         user_waypoints = st.session_state.get("user_waypoints", [])
@@ -320,7 +321,7 @@ try:
             
             if wp_coords:
                 wp_df = pd.DataFrame(wp_coords)
-                fig.add_trace(go.Scattermapbox(
+                fig.add_trace(go.Scattermap(
                     lat=wp_df["lat"],
                     lon=wp_df["lon"],
                     mode="markers",
@@ -331,10 +332,10 @@ try:
                     hovertemplate="<b>%{hovertext}</b><br>Waypoint<extra></extra>",
                 ))
         
-        # Add destination marker (red) - use go.Scattermapbox directly
+        # Add destination marker (red) - use go.Scattermap directly
         dest_m = markers[markers["type"] == "destination"]
         if not dest_m.empty:
-            fig.add_trace(go.Scattermapbox(
+            fig.add_trace(go.Scattermap(
                 lat=dest_m["lat"],
                 lon=dest_m["lon"],
                 mode="markers",
@@ -351,7 +352,7 @@ try:
             "lon": [-19.02],
             "text": ["<b>Iceland</b>"]
         })
-        fig.add_trace(px.scatter_mapbox(
+        fig.add_trace(px.scatter_map(
             iceland_label, lat="lat", lon="lon",
             text="text",
             color_discrete_sequence=["rgba(0,0,0,0)"],
@@ -366,7 +367,7 @@ try:
         )
         
         fig.update_layout(
-            mapbox_style="carto-positron",  # Lighter style with English labels
+            map_style="carto-positron",  # Lighter style with English labels
             margin=dict(l=0, r=0, t=50, b=0),
             legend=dict(
                 orientation="h",
@@ -380,7 +381,7 @@ try:
         )
         mapbox_token = os.environ.get("MAPBOX_TOKEN", "")
         if mapbox_token:
-            fig.update_layout(mapbox_accesstoken=mapbox_token)
+            fig.update_layout(map_mapbox_accesstoken=mapbox_token)
         st.plotly_chart(fig, use_container_width=True)
 except Exception as exc:  # pragma: no cover
     st.caption(f"Map preview unavailable: {exc}")
@@ -816,13 +817,14 @@ if cached_routes:
         z=z,
         x=x_labels,
         y=y_labels,
+        zmin=0,
+        zmax=1,
         colorscale=[
-            [0.0, "#15803d"],   # deep green – safe
-            [0.25, "#22c55e"],  # green
-            [0.45, "#fbbf24"],  # gold – caution
-            [0.65, "#f97316"],  # orange – warning
-            [0.85, "#dc2626"],  # red – danger
-            [1.0, "#991b1b"],   # dark red – critical
+            [0.0,  "#22c55e"],  # green – safe
+            [0.25, "#86efac"],  # light green – low
+            [0.5,  "#fbbf24"],  # gold – moderate
+            [0.75, "#f97316"],  # orange – high
+            [1.0,  "#dc2626"],  # red – critical
         ],
         text=[[f"{v:.2f}" for v in row] for row in z],
         texttemplate="%{text}",
