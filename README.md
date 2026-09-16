@@ -14,7 +14,6 @@ Create a `.env` file in the project root with your own Google Maps API key:
 ```bash
 GOOGLE_MAPS_API_KEY=your_key_here
 ```
-> Note: never commit `.env` - it is git-ignored. Use your own key to stay within the API terms.
 
 > Tip: set `DEFAULT_MAPS_URL` in `.env` to pre-fill the app with your favorite route.
 
@@ -36,11 +35,6 @@ pytest tests/ -q
 ```
 URL parsing, validation, backend detection, and route-to-station ordering.
 
-### 5. Use the notebook
-```bash
-jupyter notebook Test_Code.ipynb
-```
-The notebook reuses the same dynamic URL input (`input()` prompt in Jupyter).
 
 ## Project Structure
 
@@ -59,7 +53,7 @@ data/                          # Runtime caches & generated files (git-ignored)
 ## Key Features
 
 - **Dynamic URL input** - no hardcoded Google Maps links; paste any route at runtime
-- **Runtime-adaptive** - `st.text_input` in Streamlit, `input()` in notebook/CLI
+- **Runtime-adaptive** - `st.text_input` in Streamlit
 - **Validation before API call** - catches bad URLs early with clear messages
 - **Vedur.is weather** - 15 km spatial sampling, live + forecast-at-ETA, route-ordered stations
 - **Fuel prices** - live from the Gasvaktin CDN
