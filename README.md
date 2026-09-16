@@ -2,6 +2,13 @@
 
 Optimize your Iceland Ring Road (Route 1) trip with live weather, road conditions, and fuel prices.
 
+## Demo
+
+<img width="800" height="468" alt="github_demo" src="https://github.com/user-attachments/assets/73f80510-bff3-496b-8c2e-8ad85f93cb18" />
+
+
+
+
 ## Quick Start
 
 ### 1. Install dependencies
