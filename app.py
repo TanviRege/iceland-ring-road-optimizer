@@ -5,8 +5,7 @@ Run with either:
     streamlit run app.py
     python app.py          # auto-launches streamlit
 
-This is the "Streamlit-like interface" front-end. It replaces the notebook's
-hardcoded Google Maps URL with a reactive `st.text_input` that the user fills
+This is the "Streamlit-like interface" front-end. It uses `st.text_input` that the user fills
 in at runtime, then drives the same route -> directions -> weather-station ->
 weather pipeline used by the notebook.
 """
@@ -283,7 +282,7 @@ try:
         
         markers = pd.DataFrame(marker_data)
         
-        # Plotly 6.x: use px.line_map (line_mapbox was removed)
+        # Plotly 6.x:
         pts = pts.rename(columns={"lng": "lon"})
         fig = px.line_map(
             pts, lat="lat", lon="lon", zoom=6, height=480,
@@ -292,7 +291,7 @@ try:
         # Hide legend for the route line
         fig.data[0].update(showlegend=False, name="Route", hoverinfo="skip")
         
-        # Add origin marker (green) - use go.Scattermap directly to avoid duplicate legend entries
+        # Add origin marker (green) - using go.Scattermap directly to avoid duplicate legend entries
         origin_m = markers[markers["type"] == "origin"]
         if not origin_m.empty:
             fig.add_trace(go.Scattermap(
@@ -306,8 +305,8 @@ try:
                 hovertemplate="<b>%{hovertext}</b><br>Origin<extra></extra>",
             ))
         
-        # Add waypoint markers (blue) - use go.Scattermap directly
-        # Use user_waypoints from session state (original waypoints from Google Maps URL)
+        # Add waypoint markers (blue) - using go.Scattermap directly
+        # Using user_waypoints from session state (original waypoints from Google Maps URL)
         # because Directions API with "via:" waypoints doesn't create separate legs
         user_waypoints = st.session_state.get("user_waypoints", [])
         if user_waypoints:
@@ -332,7 +331,7 @@ try:
                     hovertemplate="<b>%{hovertext}</b><br>Waypoint<extra></extra>",
                 ))
         
-        # Add destination marker (red) - use go.Scattermap directly
+        # Add destination marker (red) - using go.Scattermap directly
         dest_m = markers[markers["type"] == "destination"]
         if not dest_m.empty:
             fig.add_trace(go.Scattermap(
@@ -346,7 +345,7 @@ try:
                 hovertemplate="<b>%{hovertext}</b><br>Destination<extra></extra>",
             ))
         
-        # Add "Iceland" label at center of country
+        # Adding "Iceland" label at center of country
         iceland_label = pd.DataFrame({
             "lat": [64.96],
             "lon": [-19.02],
@@ -538,7 +537,7 @@ if cached_routes:
     st.markdown("---")
 
     # ==================================================================
-    # NEW: Weather Alerts Timeline - Route-based alert visualization
+    # Weather Alerts Timeline - Route-based alert visualization
     # ==================================================================
     st.markdown("### ⚠️ Weather Alerts Along Route")
     

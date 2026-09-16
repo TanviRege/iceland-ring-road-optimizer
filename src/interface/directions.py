@@ -1,9 +1,5 @@
 """
 Google Maps Directions API helpers.
-
-These are extracted from the notebook so the Streamlit app (``app.py``) and any
-other entry point can reuse them without duplicating logic. The notebook retains
-its own inline copies; both implementations are kept intentionally identical.
 """
 from __future__ import annotations
 
@@ -16,7 +12,7 @@ try:
     from dotenv import load_dotenv
 
     load_dotenv(override=True)
-except Exception:  # pragma: no cover
+except Exception:
     pass
 
 
